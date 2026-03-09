@@ -1,0 +1,12 @@
+yfinance>=0.2.38
+pandas>=2.1.0
+numpy>=1.26.0
+pytz>=2024.1
+matplotlib>=3.8.0
+seaborn>=0.13.0
+ipywidgets>=8.1.0
+jupyter>=1.0.0
+ipykernel>=6.29.0
+python-dotenv>=1.0.0
+cloudscraper>=1.2.71
+beautifulsoup4>=4.12.0
