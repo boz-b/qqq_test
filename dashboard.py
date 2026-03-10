@@ -474,27 +474,242 @@ def get_day_data(date_str: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Smoke-test: run this file directly to verify Steps 1 & 2
+# Step 3 — HTTP request handler
+# ---------------------------------------------------------------------------
+# Python's built-in BaseHTTPRequestHandler handles one request at a time.
+# We override do_GET() to route three URL patterns:
+#
+#   GET /              → serve the single-page HTML app (defined in Step 4)
+#   GET /api/dates     → return JSON array of available trading dates
+#   GET /api/day?date= → return JSON payload for one trading day
+#
+# All other paths get a plain 404 response.
+
+# HTML_PAGE is a module-level string holding the full UI.
+# It is defined in Steps 4 & 5; we forward-reference it here as a global.
+# Python resolves globals at call-time (not at class-definition time), so
+# the handler will find HTML_PAGE even though it is defined further down.
+
+class DashboardHandler(BaseHTTPRequestHandler):
+    """HTTP request handler for the QQQ Intraday Dashboard."""
+
+    # ------------------------------------------------------------------
+    # Routing
+    # ------------------------------------------------------------------
+
+    def do_GET(self):
+        """
+        Entry point for every incoming GET request.
+
+        urlparse splits the raw URL (e.g. "/api/day?date=2026-02-10") into:
+            parsed.path  → "/api/day"
+            parsed.query → "date=2026-02-10"
+        parse_qs turns the query string into a dict of lists:
+            {"date": ["2026-02-10"]}
+        We then dispatch to one of three private methods based on the path.
+        """
+        parsed = urlparse(self.path)          # break URL into components
+        path   = parsed.path                  # e.g. "/", "/api/dates", "/api/day"
+        params = parse_qs(parsed.query)       # e.g. {"date": ["2026-02-10"]}
+
+        if path == "/":
+            # Root path → serve the HTML dashboard page
+            self._serve_html()
+
+        elif path == "/api/dates":
+            # Returns the list of available trading dates as JSON
+            self._serve_dates()
+
+        elif path == "/api/day":
+            # Returns chart data + stats for a specific date
+            # The date comes from the "?date=YYYY-MM-DD" query parameter
+            date_str = params.get("date", [None])[0]   # first value or None
+            self._serve_day(date_str)
+
+        else:
+            # Unknown path — return 404 with a plain-text body
+            self._send_json({"error": f"Unknown path: {path}"}, status=404)
+
+    # ------------------------------------------------------------------
+    # Response helpers
+    # ------------------------------------------------------------------
+
+    def _send_json(self, payload: dict | list, status: int = 200):
+        """
+        Serialise *payload* to JSON and send it as an HTTP response.
+
+        Parameters
+        ----------
+        payload : dict or list  — any JSON-serialisable Python object
+        status  : int           — HTTP status code (200 OK, 400 Bad Request, etc.)
+
+        The response includes:
+          • status line   (e.g. "HTTP/1.1 200 OK")
+          • Content-Type  header → "application/json"
+          • Content-Length header → exact byte count (required by HTTP/1.1)
+          • CORS header   → allows the page to call the API from any origin
+            (useful if the user opens the HTML file directly from disk)
+          • body          → UTF-8 encoded JSON bytes
+        """
+        body = json.dumps(payload).encode("utf-8")   # dict → JSON string → bytes
+
+        self.send_response(status)                            # write status line
+        self.send_header("Content-Type",   "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))   # byte count, not char count
+        self.send_header("Access-Control-Allow-Origin", "*") # CORS: allow all origins
+        self.end_headers()                                    # blank line after headers
+        self.wfile.write(body)                                # send the JSON body
+
+    def _send_html(self, html: str, status: int = 200):
+        """
+        Send *html* as an HTTP/HTML response.
+
+        Parameters
+        ----------
+        html   : str — the complete HTML document as a Python string
+        status : int — HTTP status code (normally 200)
+        """
+        body = html.encode("utf-8")                          # string → UTF-8 bytes
+
+        self.send_response(status)
+        self.send_header("Content-Type",   "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    # ------------------------------------------------------------------
+    # Route handlers
+    # ------------------------------------------------------------------
+
+    def _serve_html(self):
+        """
+        Serve the dashboard HTML page.
+
+        HTML_PAGE is a module-level string defined in Steps 4 & 5.
+        Python looks up globals at call time, so even though DashboardHandler
+        is defined before HTML_PAGE, this method will find it when called.
+        """
+        self._send_html(HTML_PAGE)
+
+    def _serve_dates(self):
+        """
+        Respond to GET /api/dates with a JSON array of available date strings.
+
+        Example response body:
+            ["2026-02-06", "2026-02-07", ..., "2026-02-27"]
+        """
+        dates = get_available_dates()   # list[str] from Step 2
+        self._send_json(dates)
+
+    def _serve_day(self, date_str: str | None):
+        """
+        Respond to GET /api/day?date=YYYY-MM-DD with a JSON payload.
+
+        If the 'date' query parameter is missing, return 400 Bad Request.
+        If get_day_data() returns an "error" key, forward it as 400.
+        Otherwise return 200 with the full day payload.
+
+        Parameters
+        ----------
+        date_str : str or None — value of the 'date' query parameter
+        """
+        if date_str is None:
+            # Caller forgot to include ?date=… in the URL
+            self._send_json({"error": "Missing required query param: date"}, status=400)
+            return
+
+        payload = get_day_data(date_str)   # dict from Step 2
+
+        if "error" in payload:
+            # get_day_data signals user errors via an "error" key rather than
+            # raising exceptions, so we can forward a meaningful 400 response.
+            self._send_json(payload, status=400)
+        else:
+            self._send_json(payload, status=200)
+
+    # ------------------------------------------------------------------
+    # Silence the default request logging
+    # ------------------------------------------------------------------
+
+    def log_message(self, fmt, *args):
+        """
+        Override BaseHTTPRequestHandler.log_message to produce cleaner output.
+
+        The default implementation prints every request to stderr in Apache
+        Combined Log Format.  We replace it with a compact one-liner that
+        shows method, path, and status — easier to read in a terminal.
+        """
+        # self.command → "GET", self.path → "/api/day?date=…"
+        # args[1] → status code string e.g. "200"
+        print(f"  {self.command} {self.path}  →  {args[1]}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Step 4 & 5 placeholder — HTML_PAGE defined in next steps
+# HTML_PAGE must be defined before the server starts (see main() below).
+# ---------------------------------------------------------------------------
+HTML_PAGE = ""   # replaced in Step 4
+
+
+# ---------------------------------------------------------------------------
+# Server entry point  (Steps 4 & 5 will keep this unchanged)
+# ---------------------------------------------------------------------------
+
+def main():
+    """
+    Parse command-line arguments, start the HTTP server, and block forever.
+
+    Accepts one optional flag:
+        --port INT   override the default port (8765)
+
+    Keyboard interrupt (Ctrl-C) shuts the server down cleanly.
+    """
+    parser = argparse.ArgumentParser(description="QQQ Intraday Dashboard")
+    parser.add_argument(
+        "--port", type=int, default=DEFAULT_PORT,
+        help=f"TCP port to listen on (default: {DEFAULT_PORT})"
+    )
+    args = parser.parse_args()
+
+    # HTTPServer binds to ("", port) which means "all interfaces" — the
+    # dashboard is reachable at http://localhost:<port>/ from the same machine.
+    server = HTTPServer(("", args.port), DashboardHandler)
+
+    print(f"QQQ Dashboard running at  http://localhost:{args.port}/", flush=True)
+    print("Press Ctrl-C to stop.\n", flush=True)
+
+    try:
+        server.serve_forever()      # blocks; handles one request at a time
+    except KeyboardInterrupt:
+        print("\nShutting down …", flush=True)
+    finally:
+        server.server_close()       # release the port
+
+
+# ---------------------------------------------------------------------------
+# Smoke-test / entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("=== Step 2 smoke test ===")
-    dates = get_available_dates()
-    print(f"Available dates ({len(dates)}): {dates[0]} … {dates[-1]}")
+    # If --smoke-test flag present, run the Step 2 validation and exit.
+    # Otherwise start the real server via main().
+    if "--smoke-test" in sys.argv:
+        print("=== Steps 1–3 smoke test ===")
+        dates = get_available_dates()
+        print(f"Available dates ({len(dates)}): {dates[0]} … {dates[-1]}")
+        sample = dates[0]
+        data = get_day_data(sample)
+        assert "error" not in data, f"get_day_data error: {data['error']}"
+        print(f"Date: {data['date']}  prior_close: {data['prior_close']}")
+        print(f"PM stats: {data['pm_stats']}")
+        print(f"Chart: {len(data['chart']['labels'])} pts  "
+              f"({data['chart']['labels'][0]} → {data['chart']['labels'][-1]})")
+        print(f"FF events: {len(data['ff_events'])}")
+        # Verify the handler class is importable and has the right methods
+        assert hasattr(DashboardHandler, "do_GET")
+        assert hasattr(DashboardHandler, "_serve_dates")
+        assert hasattr(DashboardHandler, "_serve_day")
+        assert hasattr(DashboardHandler, "_serve_html")
+        print("Steps 1–3 OK.")
+        sys.exit(0)
 
-    # Test get_day_data on the first available date
-    sample = dates[0]
-    data = get_day_data(sample)
-    if "error" in data:
-        print(f"ERROR for {sample}: {data['error']}")
-        sys.exit(1)
-
-    print(f"\nDate        : {data['date']}")
-    print(f"Prior close : {data['prior_close']}")
-    print(f"PM stats    : {data['pm_stats']}")
-    print(f"Chart pts   : {len(data['chart']['labels'])} labels, "
-          f"{len(data['chart']['prices'])} prices")
-    print(f"Chart window: {data['chart']['labels'][0]} → {data['chart']['labels'][-1]}")
-    print(f"FF events   : {len(data['ff_events'])} USD events")
-    for ev in data["ff_events"]:
-        print(f"  {ev['time']:5s}  {ev['impact'][:4]}  {ev['event']}")
-    print("\nStep 2 OK.")
+    main()
