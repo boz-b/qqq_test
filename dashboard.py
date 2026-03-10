@@ -645,10 +645,433 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 # ---------------------------------------------------------------------------
-# Step 4 & 5 placeholder — HTML_PAGE defined in next steps
-# HTML_PAGE must be defined before the server starts (see main() below).
+# Steps 4 & 5 — Single-page HTML application
 # ---------------------------------------------------------------------------
-HTML_PAGE = ""   # replaced in Step 4
+# The entire UI is one Python string.  The server sends it verbatim for GET /.
+# Keeping everything in one file means zero extra assets to manage.
+#
+# Structure of HTML_PAGE:
+#   <head>  — charset, viewport, Chart.js CDN script tag, <style> block
+#   <body>  — two-column flex layout:
+#               #sidebar  (left  ~300 px) — date picker + info cards
+#               #main     (right, flex-1) — Chart.js canvas
+#   <script> — all JavaScript (Step 5)
+#
+# CSS conventions used throughout:
+#   --bg        darkest surface (page background)
+#   --surface   card / panel background
+#   --border    subtle dividing lines
+#   --text      primary text colour
+#   --muted     secondary / label text
+#   --green     positive values (gap up, accelerating)
+#   --red       negative values (gap down, decelerating)
+#   --yellow    caution (reversal flag, medium impact)
+#   --blue      neutral highlights (prior close line, W2 annotation)
+
+HTML_PAGE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!-- viewport: tell mobile browsers not to zoom out — keeps layout readable -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QQQ Intraday Dashboard</title>
+
+  <!--
+    Chart.js v4 from jsDelivr CDN.
+    Chart.js draws the 1-minute price line, prior-close annotation, and session
+    boundary lines entirely on an HTML5 <canvas> element — no SVG, no D3.
+    The chartjs-plugin-annotation plugin adds the vertical/horizontal lines.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+
+  <style>
+    /* ── CSS custom properties (variables) ──────────────────────────────── */
+    :root {
+      --bg:      #0d1117;   /* page background — near-black */
+      --surface: #161b22;   /* sidebar + card background */
+      --card:    #1c2128;   /* inner card / table row background */
+      --border:  #30363d;   /* dividing lines */
+      --text:    #e6edf3;   /* primary text */
+      --muted:   #8b949e;   /* labels, secondary info */
+      --green:   #3fb950;   /* positive: gap up, accelerating */
+      --red:     #f85149;   /* negative: gap down, decelerating */
+      --yellow:  #d29922;   /* caution: reversal flag, medium-impact events */
+      --blue:    #58a6ff;   /* neutral: prior-close line colour */
+      --purple:  #bc8cff;   /* W2 annotation colour */
+    }
+
+    /* ── Reset & base ───────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: ui-monospace, "SFMono-Regular", "Cascadia Code",
+                   "Roboto Mono", Menlo, monospace;
+      /* monospace font gives the dashboard a Bloomberg-terminal feel and
+         makes numbers align neatly in the stats cards */
+      font-size: 13px;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;         /* fill the full viewport height */
+      display: flex;         /* top-level flex so sidebar + main share the row */
+      overflow: hidden;      /* prevent scroll on the body; each panel scrolls independently */
+    }
+
+    /* ── Sidebar (left panel) ───────────────────────────────────────────── */
+    #sidebar {
+      width: 300px;          /* fixed width; chart takes all remaining space */
+      min-width: 300px;      /* prevent squashing on narrow viewports */
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column; /* stack children vertically */
+      overflow-y: auto;       /* scroll if content overflows vertically */
+      padding: 0 0 16px 0;
+    }
+
+    /* ── Sidebar header ─────────────────────────────────────────────────── */
+    #sidebar-header {
+      padding: 16px 14px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    #sidebar-header h1 {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--text);
+    }
+    #sidebar-header p {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 3px;
+    }
+
+    /* ── Date picker section ────────────────────────────────────────────── */
+    .section {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    /* The <select> element for choosing the trading date */
+    #date-select {
+      width: 100%;
+      background: var(--card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      outline: none;
+      appearance: none;              /* hide native arrow */
+      /* custom dropdown arrow using a base64-encoded SVG chevron */
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      padding-right: 28px;
+    }
+    #date-select:focus { border-color: var(--blue); }
+
+    /* ── Stat cards ─────────────────────────────────────────────────────── */
+    /* Each card holds one group of related stats (prior close, PM stats) */
+    .stat-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-top: 8px;      /* space between cards inside a .section */
+    }
+    /* First card in a section has no top margin */
+    .stat-card:first-child { margin-top: 0; }
+
+    /* ── Individual stat rows inside a card ─────────────────────────────── */
+    .stat-row {
+      display: flex;
+      justify-content: space-between;  /* label left, value right */
+      align-items: baseline;
+      padding: 3px 0;
+    }
+    .stat-row + .stat-row {
+      border-top: 1px solid var(--border); /* thin divider between rows */
+      margin-top: 3px;
+      padding-top: 6px;
+    }
+    .stat-label {
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .stat-value {
+      font-size: 13px;
+      font-weight: 600;
+      text-align: right;
+    }
+
+    /* Colour helpers applied via JavaScript to .stat-value elements */
+    .pos  { color: var(--green);  }   /* positive numbers */
+    .neg  { color: var(--red);    }   /* negative numbers */
+    .warn { color: var(--yellow); }   /* caution / flag */
+    .neu  { color: var(--muted);  }   /* neutral / zero */
+    .hi   { color: var(--blue);   }   /* highlighted neutral */
+
+    /* ── Big prior-close number ─────────────────────────────────────────── */
+    .prior-close-value {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--blue);
+      display: block;
+      margin-top: 4px;
+    }
+
+    /* ── Loading / error placeholder text ───────────────────────────────── */
+    .placeholder {
+      color: var(--muted);
+      font-size: 12px;
+      font-style: italic;
+    }
+
+    /* ── ForexFactory events table ──────────────────────────────────────── */
+    #events-section { flex: 1; }   /* take remaining sidebar height */
+
+    .events-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 6px;
+      font-size: 11px;
+    }
+    .events-table th {
+      color: var(--muted);
+      text-align: left;
+      font-weight: 600;
+      padding: 3px 4px;
+      border-bottom: 1px solid var(--border);
+    }
+    .events-table td {
+      padding: 5px 4px;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+    .events-table tr:last-child td { border-bottom: none; }
+
+    /* Impact badge — a small coloured dot before the event name */
+    .badge {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-right: 5px;
+      vertical-align: middle;
+      flex-shrink: 0;
+    }
+    .badge-high   { background: var(--red);    }
+    .badge-medium { background: var(--yellow); }
+    .badge-low    { background: var(--muted);  }
+
+    /* Actual / Forecast / Previous values in the events table */
+    .afp {
+      color: var(--muted);
+      font-size: 10px;
+      margin-top: 2px;
+    }
+    .afp .actual { color: var(--text); font-weight: 600; }
+
+    /* ── Main chart area (right panel) ──────────────────────────────────── */
+    #main {
+      flex: 1;               /* fill all horizontal space left of the sidebar */
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 16px;
+      gap: 12px;
+    }
+
+    /* Chart title bar */
+    #chart-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+    #chart-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    #chart-subtitle {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    /* The canvas element fills all remaining vertical space in #main */
+    #chart-wrap {
+      flex: 1;               /* grow to fill remaining height */
+      position: relative;    /* Chart.js needs a positioned parent to measure size */
+      min-height: 0;         /* flex children must have min-height:0 to shrink */
+    }
+    #price-chart {
+      width:  100% !important;   /* override Chart.js inline style */
+      height: 100% !important;
+    }
+
+    /* ── Tooltip override — Chart.js default is adequate; just tweaking colours */
+    /* (Chart.js tooltip colours are set in JS options, not CSS) */
+
+    /* ── Responsive: if viewport < 700 px, stack panels vertically ──────── */
+    @media (max-width: 700px) {
+      body          { flex-direction: column; height: auto; overflow: auto; }
+      #sidebar      { width: 100%; min-width: unset; border-right: none;
+                      border-bottom: 1px solid var(--border); }
+      #chart-wrap   { height: 55vw; min-height: 260px; }
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       LEFT SIDEBAR
+       ═══════════════════════════════════════════════════════════════════ -->
+  <aside id="sidebar">
+
+    <!-- Dashboard title -->
+    <div id="sidebar-header">
+      <h1>QQQ Intraday</h1>
+      <p>8:00 – 11:00 AM ET &nbsp;·&nbsp; 1-min bars</p>
+    </div>
+
+    <!-- ── Date picker ─────────────────────────────────────────────────── -->
+    <div class="section">
+      <div class="section-label">Trading Date</div>
+      <!--
+        The <select> is populated by JavaScript (loadDates()) with one
+        <option> per available trading day.  Changing the selection triggers
+        loadDay() which fetches /api/day?date=… and refreshes all panels.
+      -->
+      <select id="date-select">
+        <option value="">Loading dates…</option>
+      </select>
+    </div>
+
+    <!-- ── Prior close card ────────────────────────────────────────────── -->
+    <div class="section">
+      <div class="section-label">Prior Session Close</div>
+      <div class="stat-card">
+        <!--
+          prior-close-value is a large blue number updated by JS.
+          The horizontal dashed line on the chart sits at this price.
+        -->
+        <span id="prior-close-value" class="prior-close-value placeholder">—</span>
+      </div>
+    </div>
+
+    <!-- ── Premarket stats card ─────────────────────────────────────────── -->
+    <div class="section">
+      <div class="section-label">Premarket Stats <span style="color:var(--muted);font-size:10px">(8:00–9:29 ET)</span></div>
+      <div class="stat-card">
+
+        <!-- Gap % vs prior close -->
+        <div class="stat-row">
+          <span class="stat-label">Gap vs prior close</span>
+          <span id="pm-gap"       class="stat-value placeholder">—</span>
+        </div>
+
+        <!-- Direction: +1 / -1 / 0 rendered as arrow + text -->
+        <div class="stat-row">
+          <span class="stat-label">PM direction</span>
+          <span id="pm-direction" class="stat-value placeholder">—</span>
+        </div>
+
+        <!-- Momentum score: late-PM / early-PM move ratio -->
+        <div class="stat-row">
+          <span class="stat-label">Momentum score</span>
+          <span id="pm-momentum"  class="stat-value placeholder">—</span>
+        </div>
+
+        <!-- Momentum acceleration: +1 accelerating / -1 decelerating -->
+        <div class="stat-row">
+          <span class="stat-label">Momentum accel</span>
+          <span id="pm-accel"     class="stat-value placeholder">—</span>
+        </div>
+
+        <!-- Reversal flag: 1 = direction flipped 8:59→9:29 -->
+        <div class="stat-row">
+          <span class="stat-label">Reversal flag</span>
+          <span id="pm-reversal"  class="stat-value placeholder">—</span>
+        </div>
+
+      </div><!-- /.stat-card -->
+    </div><!-- /.section -->
+
+    <!-- ── ForexFactory events ─────────────────────────────────────────── -->
+    <div class="section" id="events-section">
+      <div class="section-label">USD Events <span style="color:var(--muted);font-size:10px">(ForexFactory)</span></div>
+      <!--
+        #events-body is a <tbody> populated by JS with one <tr> per event.
+        If there are no events, a single "No USD events" row is inserted.
+      -->
+      <table class="events-table">
+        <thead>
+          <tr>
+            <th style="width:36px">Time</th>
+            <th>Event</th>
+            <th style="width:50px;text-align:right">Act / Fcst</th>
+          </tr>
+        </thead>
+        <tbody id="events-body">
+          <tr><td colspan="3" class="placeholder">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div><!-- /.section -->
+
+  </aside><!-- /#sidebar -->
+
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       RIGHT PANEL — chart (Step 5 fills this with Chart.js logic)
+       ═══════════════════════════════════════════════════════════════════ -->
+  <main id="main">
+
+    <div id="chart-header">
+      <!--
+        #chart-title  updated by JS to show the selected date
+        #chart-subtitle shows the session boundaries as a reminder
+      -->
+      <span id="chart-title">QQQ</span>
+      <span id="chart-subtitle">Select a date to load the chart</span>
+    </div>
+
+    <div id="chart-wrap">
+      <!--
+        The <canvas> is where Chart.js renders the line chart.
+        Width/height are set to 100% via CSS; Chart.js reads the parent
+        div's pixel dimensions at render time.
+      -->
+      <canvas id="price-chart"></canvas>
+    </div>
+
+  </main><!-- /#main -->
+
+
+  <!-- Step 5 JavaScript inserted here -->
+  <script>
+  // =========================================================================
+  // Step 5 JavaScript placeholder — replaced in the next commit
+  // =========================================================================
+  // For now, just show a visible message in the chart area so the layout
+  // renders correctly and we can verify the CSS before wiring up the logic.
+  document.getElementById('chart-subtitle').textContent =
+    'JavaScript not yet loaded (Step 5 pending)';
+  </script>
+
+</body>
+</html>"""
 
 
 # ---------------------------------------------------------------------------
