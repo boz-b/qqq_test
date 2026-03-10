@@ -1059,15 +1059,444 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </main><!-- /#main -->
 
 
-  <!-- Step 5 JavaScript inserted here -->
   <script>
   // =========================================================================
-  // Step 5 JavaScript placeholder — replaced in the next commit
+  // Step 5 — Dashboard JavaScript
   // =========================================================================
-  // For now, just show a visible message in the chart area so the layout
-  // renders correctly and we can verify the CSS before wiring up the logic.
-  document.getElementById('chart-subtitle').textContent =
-    'JavaScript not yet loaded (Step 5 pending)';
+  // Execution flow:
+  //   1. loadDates()  — page load — fetches /api/dates, populates dropdown,
+  //                     auto-loads the most recent date
+  //   2. loadDay(d)   — on date change — fetches /api/day?date=d, calls the
+  //                     three render functions below
+  //   3. updateHeader / updateSidebar / updateChart — each owns one panel
+  //
+  // The only global mutable state is `chartInstance` (one Chart.js object).
+  'use strict';
+
+  // ── DOM element references ─────────────────────────────────────────────────
+  // Cached once at startup; avoids repeated getElementById lookups in hot paths.
+  const selEl      = document.getElementById('date-select');        // date dropdown
+  const priorEl    = document.getElementById('prior-close-value');  // large blue $
+  const gapEl      = document.getElementById('pm-gap');             // gap %
+  const dirEl      = document.getElementById('pm-direction');       // ↑/↓ direction
+  const momEl      = document.getElementById('pm-momentum');        // momentum score
+  const accelEl    = document.getElementById('pm-accel');           // accel label
+  const reversalEl = document.getElementById('pm-reversal');        // reversal flag
+  const evBodyEl   = document.getElementById('events-body');        // events <tbody>
+  const titleEl    = document.getElementById('chart-title');        // "QQQ — date"
+  const subtitleEl = document.getElementById('chart-subtitle');     // bar count
+  const canvasEl   = document.getElementById('price-chart');        // Chart.js canvas
+
+  // ── Single Chart.js instance ───────────────────────────────────────────────
+  // Kept at module scope so updateChart() can call .destroy() before recreating.
+  // Without destroy() a second chart on the same canvas throws an error.
+  let chartInstance = null;
+
+  // ── Colour palette (must match CSS :root custom properties) ───────────────
+  // Chart.js options live in JS, not CSS, so we pass hex values explicitly.
+  const C = {
+    text:    '#e6edf3',   // --text
+    muted:   '#8b949e',   // --muted
+    border:  '#30363d',   // --border
+    green:   '#3fb950',   // --green  (positive / market open)
+    red:     '#f85149',   // --red    (negative)
+    yellow:  '#d29922',   // --yellow (caution / reversal)
+    blue:    '#58a6ff',   // --blue   (price line / prior close)
+    purple:  '#bc8cff',   // --purple (W2 annotation)
+    surface: '#161b22',   // --surface (tooltip background)
+  };
+
+  // =========================================================================
+  // loadDates() — called once when the page finishes loading
+  // =========================================================================
+  async function loadDates() {
+    // async/await: 'await' pauses execution until the fetch Promise resolves,
+    // then continues with the resolved value.  Errors fall into the catch block.
+    try {
+      const resp  = await fetch('/api/dates');    // GET /api/dates
+      const dates = await resp.json();            // JSON array of "YYYY-MM-DD" strings
+
+      if (!Array.isArray(dates) || dates.length === 0) {
+        // Server returned empty array — no intraday data in the CSV
+        selEl.innerHTML = '<option value="">No data available</option>';
+        subtitleEl.textContent = 'No intraday data found. Run data_loader.py first.';
+        return;
+      }
+
+      // Populate the dropdown.  API returns oldest-first; we reverse so the
+      // most recent date is at the top and selected by default.
+      selEl.innerHTML = dates
+        .slice()                                   // copy — don't mutate the API array
+        .reverse()                                 // newest first
+        .map(d => `<option value="${d}">${d}</option>`)  // one <option> per date
+        .join('');                                 // join into one HTML string
+
+      // Auto-load the most recent date (last element before reversing)
+      await loadDay(dates[dates.length - 1]);
+
+    } catch (err) {
+      // Network failure or JSON parse error
+      subtitleEl.textContent = 'Error loading dates: ' + err.message;
+    }
+  }
+
+  // =========================================================================
+  // loadDay(dateStr) — fetch one day's data and render all three panels
+  // =========================================================================
+  async function loadDay(dateStr) {
+    if (!dateStr) return;   // guard: empty string when no option is selected
+
+    subtitleEl.textContent = 'Loading ' + dateStr + '\u2026';  // "Loading 2026-02-10…"
+
+    try {
+      const resp = await fetch('/api/day?date=' + dateStr);
+      const data = await resp.json();
+
+      if (data.error) {
+        // API returned a structured error (400 response with {error: "..."})
+        subtitleEl.textContent = 'Error: ' + data.error;
+        return;
+      }
+
+      // Sync the dropdown value in case loadDay was called programmatically
+      selEl.value = dateStr;
+
+      // Render each panel with the fresh data
+      updateHeader(data);     // chart title bar
+      updateSidebar(data);    // prior close + PM stats + events table
+      updateChart(data);      // Chart.js line chart
+
+    } catch (err) {
+      subtitleEl.textContent = 'Fetch error: ' + err.message;
+    }
+  }
+
+  // =========================================================================
+  // updateHeader(data) — set the chart title and bar-count subtitle
+  // =========================================================================
+  function updateHeader(data) {
+    titleEl.textContent = 'QQQ \u2014 ' + data.date;   // em-dash: "QQQ — 2026-02-10"
+    const n = data.chart.labels.length;                 // number of 1-min bars
+    subtitleEl.textContent =
+      n + ' bars \u00b7 8:00\u2013 11:00 AM ET';        // middle dot · and en-dash –
+  }
+
+  // =========================================================================
+  // updateSidebar(data) — fill prior-close card, PM stats card, events table
+  // =========================================================================
+  function updateSidebar(data) {
+    const pc = data.prior_close;   // float | null
+    const pm = data.pm_stats;      // {gap_pct, direction, momentum_score, …}
+
+    // ── Prior close ──────────────────────────────────────────────────────────
+    if (pc !== null && pc !== undefined) {
+      priorEl.textContent = '$' + pc.toFixed(2);          // "$609.65"
+      priorEl.className   = 'prior-close-value hi';       // blue, non-placeholder
+    } else {
+      priorEl.textContent = '\u2014';                     // em-dash —
+      priorEl.className   = 'prior-close-value placeholder';
+    }
+
+    // ── Gap % ─────────────────────────────────────────────────────────────────
+    // Prepend '+' for positive gaps so "+0.75%" and "-1.55%" align visually.
+    const gap     = pm.gap_pct;
+    const gapSign = gap > 0 ? '+' : '';
+    setVal(gapEl,
+      gapSign + gap.toFixed(2) + '%',
+      gap > 0 ? 'pos' : gap < 0 ? 'neg' : 'neu');
+
+    // ── PM direction ──────────────────────────────────────────────────────────
+    // Map integer +1 / -1 / 0 to an arrow + text + colour class.
+    const dirMap = {
+       '1': { text: '\u2191 Gap Up',    cls: 'pos' },   // ↑ green
+      '-1': { text: '\u2193 Gap Down',  cls: 'neg' },   // ↓ red
+       '0': { text: '\u2014 Flat',      cls: 'neu' },   // — muted
+    };
+    const dirEntry = dirMap[String(pm.direction)] || dirMap['0'];
+    setVal(dirEl, dirEntry.text, dirEntry.cls);
+
+    // ── Momentum score ────────────────────────────────────────────────────────
+    // Ratio of late-PM to early-PM move; can be any real number.
+    const ms = pm.momentum_score;
+    setVal(momEl,
+      (ms > 0 ? '+' : '') + ms.toFixed(2),
+      ms > 0 ? 'pos' : ms < 0 ? 'neg' : 'neu');
+
+    // ── Momentum acceleration ─────────────────────────────────────────────────
+    const accelMap = {
+       '1': { text: 'Accelerating',  cls: 'pos' },
+      '-1': { text: 'Decelerating',  cls: 'neg' },
+       '0': { text: '\u2014',        cls: 'neu' },
+    };
+    const accelEntry = accelMap[String(pm.momentum_accel)] || accelMap['0'];
+    setVal(accelEl, accelEntry.text, accelEntry.cls);
+
+    // ── Reversal flag ─────────────────────────────────────────────────────────
+    // 1 = direction flipped between 8:59 and 9:29 → show warning in yellow
+    if (pm.reversal_flag === 1) {
+      setVal(reversalEl, '\u26a0 Yes', 'warn');    // ⚠ yellow
+    } else {
+      setVal(reversalEl, 'No', 'neu');
+    }
+
+    // ── Events table ──────────────────────────────────────────────────────────
+    renderEvents(data.ff_events);
+  }
+
+  // ── Helper: set .textContent and colour class on a .stat-value element ─────
+  function setVal(el, text, colorClass) {
+    el.textContent = text;
+    el.className   = 'stat-value ' + colorClass;  // e.g. "stat-value pos"
+  }
+
+  // ── Helper: map FF impact string → badge CSS class ──────────────────────────
+  function badgeClass(impact) {
+    const lower = (impact || '').toLowerCase();
+    if (lower.includes('high'))   return 'badge-high';    // red dot
+    if (lower.includes('medium')) return 'badge-medium';  // yellow dot
+    return 'badge-low';                                   // grey dot
+  }
+
+  // ── Helper: HTML-escape user-visible strings (prevents XSS) ─────────────────
+  // Event names from an external source (ForexFactory) could theoretically
+  // contain < > & " characters that would break the HTML or allow injection.
+  function esc(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g,  '&amp;')
+      .replace(/</g,  '&lt;')
+      .replace(/>/g,  '&gt;')
+      .replace(/"/g,  '&quot;');
+  }
+
+  // ── renderEvents(events) — build event table rows ───────────────────────────
+  function renderEvents(events) {
+    if (!events || events.length === 0) {
+      evBodyEl.innerHTML =
+        '<tr><td colspan="3" class="placeholder">No USD events this day</td></tr>';
+      return;
+    }
+
+    evBodyEl.innerHTML = events.map(ev => {
+      const bc = badgeClass(ev.impact);   // CSS class for the coloured dot
+
+      // Actual / Forecast / Previous sub-line, shown only when data is present
+      const afpHtml = (ev.actual || ev.forecast)
+        ? `<div class="afp">` +
+            `<span class="actual">${esc(ev.actual) || '\u2014'}</span>` +
+            ` / ${esc(ev.forecast) || '\u2014'}` +
+            (ev.previous
+              ? ` <span style="color:#555">prev ${esc(ev.previous)}</span>`
+              : '') +
+          `</div>`
+        : '';
+
+      return `<tr>
+        <td style="color:var(--muted);font-size:10px;white-space:nowrap">
+          ${esc(ev.time)}
+        </td>
+        <td>
+          <span class="badge ${bc}"></span>${esc(ev.event)}${afpHtml}
+        </td>
+        <td style="text-align:right;font-size:10px;white-space:nowrap">
+          ${ev.actual
+            ? `<span style="color:var(--text);font-weight:600">${esc(ev.actual)}</span>`
+            : ''}
+          ${ev.forecast
+            ? `<span style="color:var(--muted)">/ ${esc(ev.forecast)}</span>`
+            : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  // =========================================================================
+  // updateChart(data) — destroy old chart, build new Chart.js instance
+  // =========================================================================
+  function updateChart(data) {
+    // Always destroy before creating — Chart.js keeps an internal canvas ref.
+    if (chartInstance) {
+      chartInstance.destroy();
+      chartInstance = null;
+    }
+
+    const labels = data.chart.labels;   // ["08:00", "08:01", … "11:00"]
+    const prices = data.chart.prices;   // [596.02, 596.10, …]  (null = missing bar)
+    const pc     = data.prior_close;    // float | null
+
+    // ── Annotations: vertical session lines + horizontal prior-close line ────
+    const annotations = {};
+
+    // Vertical dashed line at 09:30 — official market open / W1 start.
+    // scaleID:'x' targets the category axis; value must match a label string exactly.
+    annotations.openLine = {
+      type:        'line',
+      scaleID:     'x',
+      value:       '09:30',        // label string that marks the open
+      borderColor: C.green,
+      borderWidth: 1,
+      borderDash:  [4, 4],         // 4 px on, 4 px off
+      label: {
+        display:         true,
+        content:         'Open 9:30',
+        color:           C.green,
+        font:            { size: 10, family: 'ui-monospace, monospace' },
+        position:        'start',  // label at the top of the canvas
+        yAdjust:         -6,       // nudge upward to clear the price line
+        backgroundColor: 'transparent',
+        borderWidth:     0,
+      },
+    };
+
+    // Vertical dashed line at 10:00 — W2 window start.
+    annotations.w2Line = {
+      type:        'line',
+      scaleID:     'x',
+      value:       '10:00',
+      borderColor: C.purple,
+      borderWidth: 1,
+      borderDash:  [4, 4],
+      label: {
+        display:         true,
+        content:         'W2 10:00',
+        color:           C.purple,
+        font:            { size: 10, family: 'ui-monospace, monospace' },
+        position:        'start',
+        yAdjust:         -6,
+        backgroundColor: 'transparent',
+        borderWidth:     0,
+      },
+    };
+
+    // Horizontal dashed line at the prior-session closing price.
+    // Only added when a valid prior close exists (null on the very first date).
+    if (pc !== null && pc !== undefined) {
+      annotations.priorCloseLine = {
+        type:        'line',
+        scaleID:     'y',          // targets the price (y) axis
+        value:       pc,           // price level for the horizontal line
+        borderColor: C.blue,
+        borderWidth: 1,
+        borderDash:  [6, 3],       // longer dash than session lines
+        label: {
+          display:         true,
+          content:         'Prev $' + pc.toFixed(2),
+          color:           C.blue,
+          font:            { size: 10, family: 'ui-monospace, monospace' },
+          position:        'end',  // right side of the canvas
+          xAdjust:         -4,     // nudge inward from the right edge
+          yAdjust:         -8,     // nudge above the line to avoid overlap
+          backgroundColor: 'transparent',
+          borderWidth:     0,
+        },
+      };
+    }
+
+    // ── Chart.js configuration object ────────────────────────────────────────
+    chartInstance = new Chart(canvasEl, {
+      type: 'line',
+      data: {
+        labels:   labels,           // x-axis: time strings
+        datasets: [{
+          label:            'QQQ close',
+          data:             prices,  // y-axis: price floats
+          borderColor:      C.blue,  // blue price line
+          borderWidth:      1.5,     // thin but readable
+          pointRadius:      0,       // hide dots — 181 points would be cluttered
+          pointHoverRadius: 4,       // but show one on hover for the tooltip
+          tension:          0,       // straight segments between points
+          spanGaps:         true,    // connect across null (missing 1-min bars)
+          fill:             false,   // no shaded area under the line
+        }],
+      },
+
+      options: {
+        responsive:          true,    // resize when the container resizes
+        maintainAspectRatio: false,   // height is controlled by CSS flex, not ratio
+
+        animation: {
+          duration: 200,             // fast fade-in when switching dates
+        },
+
+        layout: {
+          // Top padding reserves visual space for annotation labels that appear
+          // above the top edge of the plot area.
+          padding: { top: 28, right: 20, bottom: 8, left: 8 },
+        },
+
+        interaction: {
+          mode:      'index',        // show tooltip at the closest x-index
+          intersect: false,          // fire tooltip even when not on a point
+          axis:      'x',
+        },
+
+        plugins: {
+          legend: { display: false },   // single dataset — legend is redundant
+
+          tooltip: {
+            backgroundColor: C.surface,
+            titleColor:      C.muted,
+            bodyColor:       C.text,
+            borderColor:     C.border,
+            borderWidth:     1,
+            padding:         8,
+            titleFont: { family: 'ui-monospace, monospace', size: 11 },
+            bodyFont:  { family: 'ui-monospace, monospace', size: 12 },
+            callbacks: {
+              title: items => items[0].label,                    // "09:31"
+              label: item  => ' $' + item.parsed.y.toFixed(2),  // " $481.73"
+            },
+          },
+
+          // Pass annotation definitions to the plugin
+          annotation: { annotations },
+        },
+
+        scales: {
+          // X-axis: category scale (string labels)
+          x: {
+            ticks: {
+              color:       C.muted,
+              maxRotation: 0,      // keep labels horizontal
+              font:        { family: 'ui-monospace, monospace', size: 10 },
+              // Show a tick label only on exact :00 and :30 minute marks to
+              // avoid crowding 181 labels onto the axis.
+              callback: function(value, index) {
+                const lbl = this.getLabelForValue(index);
+                return (lbl && (lbl.endsWith(':00') || lbl.endsWith(':30')))
+                  ? lbl : '';
+              },
+            },
+            grid: { color: C.border },
+          },
+
+          // Y-axis: price scale, displayed on the right side (Bloomberg style)
+          y: {
+            position: 'right',
+            ticks: {
+              color:    C.muted,
+              font:     { family: 'ui-monospace, monospace', size: 10 },
+              callback: v => '$' + v.toFixed(0),  // "$480", "$490", …
+            },
+            grid: { color: C.border },
+          },
+        },
+      },
+    });
+  }
+
+  // =========================================================================
+  // Initialise on page load
+  // =========================================================================
+  // loadDates() kicks off the whole chain:
+  //   loadDates()
+  //     → populates the dropdown
+  //     → calls loadDay(mostRecent)
+  //         → updateHeader + updateSidebar + updateChart
+  loadDates();
+
+  // Wire the dropdown: any change by the user triggers a full re-render
+  selEl.addEventListener('change', () => loadDay(selEl.value));
   </script>
 
 </body>
