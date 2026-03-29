@@ -43,10 +43,16 @@ import numpy as np       # NaN checks (np.isnan / np.isfinite)
 # Using __file__ makes the script work regardless of where you launch it from.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Paths to the three CSV files produced/updated by data_loader.py & ff_scraper.py
-INTRADAY_CSV = os.path.join(BASE_DIR, "qqq_1m.csv")   # 1-min bars, premarket included
-DAILY_CSV    = os.path.join(BASE_DIR, "qqq_daily.csv") # end-of-day OHLCV, ~2 years
-FF_CSV       = os.path.join(BASE_DIR, "ff_events.csv") # ForexFactory USD macro events
+# Paths to the three CSV files produced/updated by data_loader.py & ff_scraper.py.
+# The canonical location is BASE_DIR/data/*.csv; we keep a repo-root fallback so
+# older checkouts still open without a manual migration step.
+DATA_DIR = os.path.join(BASE_DIR, "data")
+INTRADAY_CSV = os.path.join(DATA_DIR, "qqq_1m.csv")
+DAILY_CSV    = os.path.join(DATA_DIR, "qqq_daily.csv")
+FF_CSV       = os.path.join(DATA_DIR, "ff_events.csv")
+LEGACY_INTRADAY_CSV = os.path.join(BASE_DIR, "qqq_1m.csv")
+LEGACY_DAILY_CSV    = os.path.join(BASE_DIR, "qqq_daily.csv")
+LEGACY_FF_CSV       = os.path.join(BASE_DIR, "ff_events.csv")
 
 # IANA timezone name used for ALL timestamp conversions in this project.
 # DST transitions are handled automatically by pandas / pytz.
@@ -60,6 +66,15 @@ W2_START        = "10:00"   # vertical annotation — W2 start
 
 # Default HTTP port.  Can be overridden with --port.
 DEFAULT_PORT = 8765
+
+
+def _resolve_csv_path(primary: str, legacy: str) -> str:
+    """Prefer the canonical data/ path, but tolerate older repo-root CSVs."""
+    if os.path.exists(primary):
+        return primary
+    if os.path.exists(legacy):
+        return legacy
+    return primary
 
 # ---------------------------------------------------------------------------
 # Step 1 — Data loading helpers
@@ -82,7 +97,7 @@ def load_intraday() -> pd.DataFrame:
         Columns: open, high, low, close, volume  (float / int)
     """
     # read_csv keeps datetime as a plain string column — we fix that next
-    df = pd.read_csv(INTRADAY_CSV)
+    df = pd.read_csv(_resolve_csv_path(INTRADAY_CSV, LEGACY_INTRADAY_CSV))
 
     # Convert the 'datetime' column: parse → UTC → Eastern.
     # utc=True is required when the strings carry mixed UTC-offsets (e.g. both
@@ -112,7 +127,7 @@ def load_daily() -> pd.DataFrame:
         Index  : DatetimeTZDtype (America/New_York), name='date'
         Columns: open, high, low, close, volume
     """
-    df = pd.read_csv(DAILY_CSV)
+    df = pd.read_csv(_resolve_csv_path(DAILY_CSV, LEGACY_DAILY_CSV))
 
     # Same UTC → Eastern pattern as intraday
     df["date"] = (
@@ -136,7 +151,7 @@ def load_ff_events() -> pd.DataFrame:
         Columns: DateTime (tz-aware Eastern), Currency, Impact, Event,
                  Actual, Forecast, Previous, date (plain date object for filtering)
     """
-    df = pd.read_csv(FF_CSV)
+    df = pd.read_csv(_resolve_csv_path(FF_CSV, LEGACY_FF_CSV))
 
     # Parse the 'DateTime' column; same UTC → Eastern pattern
     df["DateTime"] = (

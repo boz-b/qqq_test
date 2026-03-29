@@ -44,17 +44,10 @@ import yfinance as yf
 #   stock price data from Yahoo Finance for free.
 #   Example: yf.download("QQQ", period="1mo", interval="1d") downloads 1 month of daily bars.
 
-DATA_DIR = Path(__file__).parent.parent / "data"
+DATA_DIR = Path(__file__).resolve().parent / "data"
 # ↑ Builds the path to the project's 'data' folder automatically, no matter where you run the code from.
-#   __file__         → the full path of THIS file (data_loader.py), e.g., "/project/src/data_loader.py".
-#   Path(__file__)   → wraps it as a Path object so we can use / to navigate.
-#   .parent          → goes up one level: "/project/src/" → "/project/".
-#   .parent again    → goes up another level (not needed here but harmless since src's parent IS project).
-#   Wait — actually: Path(__file__) = /project/src/data_loader.py
-#                    .parent = /project/src/
-#                    .parent.parent = /project/
-#   / "data"         → appends "data" to get "/project/data".
-#   Result: DATA_DIR always points to the 'data' folder inside your project.
+#   In this repo, data_loader.py lives at the project root, so .parent is the repo root.
+#   / "data" appends the canonical cache directory, yielding "<repo>/data".
 
 DATA_DIR.mkdir(exist_ok=True)
 # ↑ Creates the 'data' directory if it doesn't exist yet.
