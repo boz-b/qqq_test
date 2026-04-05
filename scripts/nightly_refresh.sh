@@ -17,8 +17,8 @@ PY
 )
 EOF
 
-echo "[$(date --iso-8601=seconds)] Refreshing ForexFactory data: ${START_DATE} -> ${END_DATE}"
-python ff_scraper.py --start "$START_DATE" --end "$END_DATE" --csv data/ff_events.csv --currencies USD
+echo "[$(date --iso-8601=seconds)] Refreshing combined news + official macro feed: ${START_DATE} -> ${END_DATE}"
+python news_feeds.py
 
 echo "[$(date --iso-8601=seconds)] Exporting static dashboard data"
 python export_json.py

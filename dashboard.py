@@ -16,7 +16,7 @@ and instantly renders:
   • Vertical dashed lines at 9:30 (market open / W1 start) and 10:00 (W2 start)
   • A horizontal dashed line at the prior-day closing price
   • A left panel with: prior close, premarket gap %, PM direction/momentum/accel,
-    PM reversal flag, and any USD ForexFactory events that day
+    PM reversal flag, and up to 7 combined USD news + US macro items that day
 """
 
 # ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ def load_daily() -> pd.DataFrame:
 
 def load_ff_events() -> pd.DataFrame:
     """
-    Load and return the ForexFactory macro-event CSV.
+    Load and return the combined news/macro event CSV.
 
     Returns
     -------
@@ -186,7 +186,7 @@ def _safe_load(loader_fn, label: str) -> pd.DataFrame:
 # These module-level names are read by get_available_dates() and get_day_data()
 _INTRADAY: pd.DataFrame = _safe_load(load_intraday, "intraday CSV")
 _DAILY:    pd.DataFrame = _safe_load(load_daily,    "daily CSV")
-_FF:       pd.DataFrame = _safe_load(load_ff_events,"FF events CSV")
+_FF:       pd.DataFrame = _safe_load(load_ff_events,"combined events CSV")
 
 # Pre-build a dict  date → prior_close  from the daily CSV so get_day_data()
 # can look up prior closes in O(1) without scanning the whole DataFrame each call.
@@ -366,7 +366,7 @@ def _pm_stats(day_bars: pd.DataFrame, prev_close: float | None) -> dict:
 
 def _events_for_day(trade_date) -> list[dict]:
     """
-    Return a list of ForexFactory USD events for *trade_date*, sorted by time.
+    Return a list of combined USD news + macro items for *trade_date*, sorted by time.
 
     Each event dict has:
         time     – "HH:MM" Eastern (or "" if time is unknown)
@@ -473,7 +473,7 @@ def get_day_data(date_str: str) -> dict:
     # ── premarket stats ──────────────────────────────────────────────────────
     pm = _pm_stats(day_bars, prev_close)
 
-    # ── ForexFactory events ───────────────────────────────────────────────────
+    # ── Combined news + macro events ──────────────────────────────────────────
     events = _events_for_day(trade_date)
 
     return {
@@ -1026,7 +1026,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
     <!-- ── ForexFactory events ─────────────────────────────────────────── -->
     <div class="section" id="events-section">
-      <div class="section-label">USD Events <span style="color:var(--muted);font-size:10px">(ForexFactory)</span></div>
+      <div class="section-label">Daily Brief <span style="color:var(--muted);font-size:10px">(max 5 news + 2 macro)</span></div>
       <!--
         #events-body is a <tbody> populated by JS with one <tr> per event.
         If there are no events, a single "No USD events" row is inserted.
@@ -1036,7 +1036,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <tr>
             <th style="width:36px">Time</th>
             <th>Event</th>
-            <th style="width:50px;text-align:right">Act / Fcst</th>
+            <th style="width:50px;text-align:right">Details</th>
           </tr>
         </thead>
         <tbody id="events-body">
@@ -1273,7 +1273,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   }
 
   // ── Helper: HTML-escape user-visible strings (prevents XSS) ─────────────────
-  // Event names from an external source (ForexFactory) could theoretically
+  // Event names from external sources could theoretically
   // contain < > & " characters that would break the HTML or allow injection.
   function esc(str) {
     if (!str) return '';
@@ -1288,7 +1288,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   function renderEvents(events) {
     if (!events || events.length === 0) {
       evBodyEl.innerHTML =
-        '<tr><td colspan="3" class="placeholder">No USD events this day</td></tr>';
+        '<tr><td colspan="3" class="placeholder">No news or macro items this day</td></tr>';
       return;
     }
 

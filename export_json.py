@@ -8,7 +8,7 @@ Run this nightly on the Raspberry Pi via cron (after US market close):
     0 21 * * 1-5  cd /home/pi/qqq_test && venv/bin/python3 export_json.py >> logs/export.log 2>&1
 
 What it does:
-  1. Refreshes intraday + daily CSV data and reuses the latest ForexFactory CSV
+  1. Refreshes intraday + daily CSV data and reuses the latest combined news/macro CSV
   2. Imports get_available_dates() and get_day_data() from dashboard.py
   3. Writes public/data/dates.json  — array of all trading dates
   4. Writes public/data/YYYY-MM-DD.json  — one payload file per date
@@ -32,10 +32,10 @@ sys.path.insert(0, BASE_DIR)
 
 # ── Step 1: Refresh source data ───────────────────────────────────────────────
 # Call the same refresh command documented in CLAUDE.md.
-# This refreshes intraday + daily CSVs under data/. ForexFactory events are
-# maintained separately by ff_scraper.py; export_json.py will use whatever FF
-# CSV is already available. If refresh fails, log a warning but continue — the
-# existing CSVs are still valid; we just won't have today's data yet.
+# This refreshes intraday + daily CSVs under data/. The combined news/macro
+# feed is maintained separately by news_feeds.py; export_json.py will use
+# whatever CSV is already available. If refresh fails, log a warning but
+# continue — the existing CSVs are still valid; we just won't have today's data yet.
 print(f"\n{'='*60}")
 print(f"export_json.py  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"{'='*60}")
