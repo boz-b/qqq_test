@@ -99,23 +99,32 @@ def _make_scraper() -> cloudscraper.CloudScraper:
 
     scraper = cloudscraper.create_scraper(
         # ↑ Creates a CloudScraper session with browser-like settings.
-        browser={"browser": "chrome", "platform": "darwin", "mobile": False}
-        # ↑ Tells cloudscraper to impersonate Chrome on macOS (darwin = macOS).
-        #   This makes the HTTP requests look like they come from a real Mac running Chrome,
-        #   which helps bypass Cloudflare's bot detection.
-        #   "mobile": False → pretend to be a desktop browser, not a phone.
+        browser={"browser": "chrome", "platform": "windows", "mobile": False}
+        # ↑ Use a common desktop Chrome fingerprint. ForexFactory/Cloudflare can be picky
+        #   about headers and TLS fingerprints; a mainstream desktop browser profile tends
+        #   to work better than exotic combinations.
     )
 
     scraper.headers.update({
         # ↑ .headers is a dictionary of HTTP request headers sent with every request.
         #   .update({}) adds or replaces entries in the dictionary.
         #   Headers tell the server things like: what browser we are, what language we prefer, etc.
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/135.0.0.0 Safari/537.36"
+        ),
         "Accept-Language": "en-US,en;q=0.9",
         # ↑ Tells the server we prefer English (US). q=0.9 means 90% preference.
         #   Websites use this to serve content in the right language.
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         # ↑ Tells the server what types of content we can handle. This mimics what a real browser sends.
         #   "text/html" = we want web pages; "*/*;q=0.8" = we accept anything else too.
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Upgrade-Insecure-Requests": "1",
+        "Referer": FF_BASE + "/calendar",
+        "DNT": "1",
     })
 
     return scraper
@@ -287,26 +296,28 @@ def fetch_day(scraper: cloudscraper.CloudScraper, day: date) -> list[dict]:
     #   "%b%d.%Y" → abbreviated month + day + year: date(2026,2,6) → "Feb06.2026".
     #   .lower()   → lowercases it: "Feb06.2026" → "feb06.2026".
 
-    url = f"{FF_BASE}/calendar?day={date_str}"
-    # ↑ Builds the full URL for this day's calendar page.
-    #   e.g., "https://www.forexfactory.com/calendar?day=feb06.2026".
+    urls = [
+        f"{FF_BASE}/calendar?day={date_str}",
+        f"{FF_BASE}/calendar/{date_str}",
+    ]
 
-    logger.info(f"  Fetching {url}")
-    # ↑ Logs an INFO message so you can see the scraper's progress in the terminal.
+    resp = None
+    for url in urls:
+        logger.info(f"  Fetching {url}")
+        try:
+            candidate = scraper.get(url, timeout=30, allow_redirects=True)
+        except Exception as exc:
+            logger.warning(f"  Request error for {day} via {url}: {exc}")
+            continue
 
-    resp = scraper.get(url, timeout=30)
-    # ↑ Makes an HTTP GET request to the URL.
-    #   GET is the standard HTTP method for fetching a webpage (like clicking a link).
-    #   timeout=30 → if the server doesn't respond within 30 seconds, raise an error (don't hang forever).
-    #   resp → the HTTP response object containing the status code and page content.
+        if candidate.status_code == 200:
+            resp = candidate
+            break
 
-    if resp.status_code != 200:
-        # ↑ HTTP status code 200 means "OK" (success). Other codes indicate problems:
-        #   403 = Forbidden, 404 = Not Found, 429 = Too Many Requests, 500 = Server Error.
-        logger.warning(f"  HTTP {resp.status_code} for {day} — skipping")
-        # ↑ Logs a WARNING (not ERROR — we just skip this day and continue).
-        return []
-        # ↑ Returns an empty list for this day — no events to report.
+        logger.warning(f"  HTTP {candidate.status_code} for {day} via {url}")
+
+    if resp is None:
+        raise RuntimeError(f"ForexFactory fetch failed for {day}: all URL variants blocked or errored")
 
     soup = BeautifulSoup(resp.text, "html.parser")
     # ↑ Parses the HTML content of the response into a searchable BeautifulSoup object.
@@ -530,10 +541,10 @@ def scrape_range(
 
     if not all_records:
         # ↑ If we got no events at all after scraping the entire range.
-        logger.warning("No events scraped.")
-        # ↑ Log a warning.
-        return existing
-        # ↑ Return whatever we already had (the pre-existing CSV data).
+        logger.error("No events scraped.")
+        # ↑ This should be treated as a real failure, not a soft success. Otherwise cron jobs
+        #   appear to work while silently leaving ff_events.csv missing/stale.
+        raise RuntimeError("No events scraped from ForexFactory; refusing to continue with empty output")
 
     new_df = pd.DataFrame(all_records)
     # ↑ Converts the list of event dictionaries into a DataFrame.
