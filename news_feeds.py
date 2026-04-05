@@ -16,13 +16,55 @@ DATA_DIR.mkdir(exist_ok=True)
 
 COMBINED_EVENTS_CSV = DATA_DIR / "ff_events.csv"
 NEWS_CSV = DATA_DIR / "news_events.csv"
+REQUEST_CACHE_CSV = DATA_DIR / "news_request_cache.csv"
 FINNHUB_ENV_FILES = [BASE_DIR / ".env", BASE_DIR / ".env.finnhub"]
+NEWS_SYMBOLS = ["QQQ", "SPY", "NVDA", "GOOGL", "META"]
+MIN_ITEMS_PER_DAY = 5
+MAX_ITEMS_PER_DAY = 7
+MAX_MACRO_PER_DAY = 5
+MAX_NEWS_PER_DAY = 2
 
 
 def _load_env() -> None:
     for env_path in FINNHUB_ENV_FILES:
         if env_path.exists():
             load_dotenv(env_path, override=False)
+
+
+def _load_request_cache() -> dict[str, list[dict[str, Any]]]:
+    if not REQUEST_CACHE_CSV.exists():
+        return {}
+    try:
+        df = pd.read_csv(REQUEST_CACHE_CSV)
+    except Exception:
+        return {}
+    cache: dict[str, list[dict[str, Any]]] = {}
+    for _, row in df.iterrows():
+        cache[str(row['key'])] = eval(row['payload']) if isinstance(row['payload'], str) else []
+    return cache
+
+
+def _save_request_cache(cache: dict[str, list[dict[str, Any]]]) -> None:
+    rows = [{"key": k, "payload": repr(v)} for k, v in cache.items()]
+    pd.DataFrame(rows).to_csv(REQUEST_CACHE_CSV, index=False)
+
+
+def _get_json_with_cache(url: str, headers: dict[str, str], cache: dict[str, list[dict[str, Any]]], retries: int = 3) -> list[dict[str, Any]]:
+    if url in cache:
+        return cache[url]
+    last_exc = None
+    for _ in range(retries):
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            payload = resp.json()
+            cache[url] = payload
+            return payload
+        except Exception as exc:
+            last_exc = exc
+    if url in cache:
+        return cache[url]
+    return []
 
 
 def _clean_text(value: Any) -> str:
@@ -35,8 +77,50 @@ def _iso_to_eastern_date(dt: pd.Timestamp) -> datetime.date:
     return dt.tz_convert("America/New_York").date()
 
 
-def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 5) -> pd.DataFrame:
-    """Fetch top Finnhub news and normalize to event-like rows."""
+def _score_news_item(item: dict[str, Any]) -> tuple[int, pd.Timestamp]:
+    ts = item.get("datetime")
+    dt = pd.to_datetime(int(ts), unit="s", utc=True)
+    headline = _clean_text(item.get("headline"))
+    summary = _clean_text(item.get("summary"))
+    source = _clean_text(item.get("source"))
+    related = _clean_text(item.get("related"))
+    score = 0
+    text = f"{headline} {summary} {related}".lower()
+    keywords = {
+        "fed": 4,
+        "fomc": 4,
+        "treasury": 3,
+        "yield": 3,
+        "inflation": 4,
+        "cpi": 4,
+        "ppi": 3,
+        "jobs": 3,
+        "payroll": 4,
+        "tariff": 3,
+        "trump": 2,
+        "white house": 2,
+        "iran": 2,
+        "china": 2,
+        "apple": 2,
+        "microsoft": 2,
+        "nvidia": 2,
+        "amazon": 2,
+        "alphabet": 2,
+        "meta": 2,
+        "tesla": 2,
+        "nasdaq": 2,
+        "qqq": 3,
+    }
+    for kw, weight in keywords.items():
+        if kw in text:
+            score += weight
+    if source.lower() in {"reuters", "associated press", "ap news"}:
+        score += 2
+    return score, dt
+
+
+def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = MAX_NEWS_PER_DAY) -> pd.DataFrame:
+    """Fetch top Finnhub historical news and normalize to event-like rows."""
     _load_env()
     api_key = os.getenv("FINNHUB_API_KEY", "").strip()
     if not api_key:
@@ -45,58 +129,44 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
     start = pd.Timestamp(start_date).date()
     end = pd.Timestamp(end_date).date()
 
+    cache = _load_request_cache()
     records: list[dict[str, Any]] = []
+    seen = set()
     day = start
+    headers = {"X-Finnhub-Token": api_key}
     while day <= end:
-        url = f"https://finnhub.io/api/v1/news?category=general&minId=0"
-        resp = requests.get(url, headers={"X-Finnhub-Token": api_key}, timeout=30)
-        resp.raise_for_status()
-        payload = resp.json()
-
         scored = []
-        for item in payload:
+        for symbol in NEWS_SYMBOLS:
+            url = f"https://finnhub.io/api/v1/company-news?symbol={symbol}&from={day.isoformat()}&to={day.isoformat()}"
+            payload = _get_json_with_cache(url, headers, cache)
+            for item in payload:
+                headline = _clean_text(item.get("headline"))
+                if not headline:
+                    continue
+                unique_key = (day.isoformat(), headline)
+                if unique_key in seen:
+                    continue
+                seen.add(unique_key)
+                score, dt = _score_news_item(item)
+                scored.append((score, dt, item))
+
+        # Also blend in a few broad market headlines for that day.
+        general_payload = _get_json_with_cache("https://finnhub.io/api/v1/news?category=general&minId=0", headers, cache)
+        for item in general_payload:
             ts = item.get("datetime")
             if not ts:
                 continue
             dt = pd.to_datetime(int(ts), unit="s", utc=True)
             if _iso_to_eastern_date(dt) != day:
                 continue
-
             headline = _clean_text(item.get("headline"))
-            summary = _clean_text(item.get("summary"))
-            source = _clean_text(item.get("source"))
-            score = 0
-            text = f"{headline} {summary}".lower()
-            keywords = {
-                "fed": 4,
-                "fomc": 4,
-                "treasury": 3,
-                "yield": 3,
-                "inflation": 4,
-                "cpi": 4,
-                "ppi": 3,
-                "jobs": 3,
-                "payroll": 4,
-                "tariff": 3,
-                "trump": 2,
-                "white house": 2,
-                "iran": 2,
-                "china": 2,
-                "apple": 2,
-                "microsoft": 2,
-                "nvidia": 2,
-                "amazon": 2,
-                "alphabet": 2,
-                "tesla": 2,
-                "nasdaq": 2,
-                "qqq": 3,
-            }
-            for kw, weight in keywords.items():
-                if kw in text:
-                    score += weight
-            if source.lower() in {"reuters", "associated press", "ap news"}:
-                score += 2
-
+            if not headline:
+                continue
+            unique_key = (day.isoformat(), headline)
+            if unique_key in seen:
+                continue
+            seen.add(unique_key)
+            score, dt = _score_news_item(item)
             scored.append((score, dt, item))
 
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
@@ -119,6 +189,7 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
 
         day += timedelta(days=1)
 
+    _save_request_cache(cache)
     df = pd.DataFrame(records)
     if df.empty:
         return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous", "Kind", "Priority"])
@@ -128,7 +199,7 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
     return df
 
 
-def fetch_official_macro(start_date: str, end_date: str, max_items_per_day: int = 2) -> pd.DataFrame:
+def fetch_official_macro(start_date: str, end_date: str, max_items_per_day: int = MAX_MACRO_PER_DAY) -> pd.DataFrame:
     """Aggregate reachable official US macro schedules from BEA and Federal Reserve."""
     start = pd.Timestamp(start_date).date()
     end = pd.Timestamp(end_date).date()
@@ -218,18 +289,28 @@ def fetch_official_macro(start_date: str, end_date: str, max_items_per_day: int 
 
 
 def build_combined_events(start_date: str, end_date: str) -> pd.DataFrame:
-    news_df = fetch_finnhub_news(start_date, end_date, max_items_per_day=5)
-    macro_df = fetch_official_macro(start_date, end_date, max_items_per_day=2)
+    news_df = fetch_finnhub_news(start_date, end_date, max_items_per_day=MAX_NEWS_PER_DAY)
+    macro_df = fetch_official_macro(start_date, end_date, max_items_per_day=MAX_MACRO_PER_DAY)
     combined = pd.concat([news_df, macro_df], ignore_index=True)
     if combined.empty:
         return combined
 
     combined["DateTime"] = pd.to_datetime(combined["DateTime"], utc=True)
     combined["date"] = combined["DateTime"].dt.tz_convert("America/New_York").dt.date
-    combined = (combined.sort_values(["date", "Kind", "Priority", "DateTime"], ascending=[True, True, False, True])
-                        .groupby("date", group_keys=False)
-                        .head(7)
-                        .drop(columns=["date"]))
+
+    out_frames = []
+    for day, group in combined.groupby("date"):
+        macros = group[group["Kind"] == "macro"].sort_values(["Priority", "DateTime"], ascending=[False, True]).head(MAX_MACRO_PER_DAY)
+        news = group[group["Kind"] == "news"].sort_values(["Priority", "DateTime"], ascending=[False, True]).head(MAX_NEWS_PER_DAY)
+        merged = pd.concat([macros, news], ignore_index=True).sort_values(["Kind", "Priority", "DateTime"], ascending=[True, False, True])
+        if len(merged) < MIN_ITEMS_PER_DAY:
+            filler = group.drop(merged.index, errors='ignore').sort_values(["Priority", "DateTime"], ascending=[False, True])
+            needed = MIN_ITEMS_PER_DAY - len(merged)
+            merged = pd.concat([merged, filler.head(needed)], ignore_index=True)
+        merged = merged.head(MAX_ITEMS_PER_DAY)
+        out_frames.append(merged)
+
+    combined = pd.concat(out_frames, ignore_index=True).drop(columns=["date"], errors='ignore')
     return combined.reset_index(drop=True)
 
 
@@ -239,8 +320,24 @@ def save_combined_events(start_date: str, end_date: str, output_csv: Path | str 
     if df.empty:
         raise RuntimeError("Combined news/macro feed is empty")
     out = df[["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous"]].copy()
-    out.to_csv(output_csv, index=False)
-    return out
+
+    archive = pd.DataFrame(columns=out.columns)
+    if NEWS_CSV.exists():
+        try:
+            archive = pd.read_csv(NEWS_CSV)
+        except Exception:
+            archive = pd.DataFrame(columns=out.columns)
+
+    merged = pd.concat([archive, out], ignore_index=True)
+    merged["DateTime"] = pd.to_datetime(merged["DateTime"], utc=True, errors="coerce")
+    merged = merged.dropna(subset=["DateTime", "Event"])
+    merged = merged.drop_duplicates(subset=["DateTime", "Event"], keep="last")
+    merged = merged.sort_values("DateTime").reset_index(drop=True)
+    merged_out = merged.copy()
+    merged_out["DateTime"] = merged_out["DateTime"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
+    merged_out.to_csv(NEWS_CSV, index=False)
+    merged_out.to_csv(output_csv, index=False)
+    return merged_out
 
 
 if __name__ == "__main__":
