@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +17,9 @@ DATA_DIR.mkdir(exist_ok=True)
 COMBINED_EVENTS_CSV = DATA_DIR / "ff_events.csv"
 NEWS_CSV = DATA_DIR / "news_events.csv"
 REQUEST_CACHE_CSV = DATA_DIR / "news_request_cache.csv"
+WEEKLY_CALENDAR_CSV = DATA_DIR / "ff_calendar_thisweek.csv"
 FINNHUB_ENV_FILES = [BASE_DIR / ".env", BASE_DIR / ".env.finnhub"]
+FINNHUB_WEEKLY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.csv"
 NEWS_SYMBOLS = ["QQQ", "SPY", "NVDA", "GOOGL", "META"]
 MIN_ITEMS_PER_DAY = 5
 MAX_ITEMS_PER_DAY = 7
@@ -40,7 +42,7 @@ def _load_request_cache() -> dict[str, list[dict[str, Any]]]:
         return {}
     cache: dict[str, list[dict[str, Any]]] = {}
     for _, row in df.iterrows():
-        cache[str(row['key'])] = eval(row['payload']) if isinstance(row['payload'], str) else []
+        cache[str(row["key"])] = eval(row["payload"]) if isinstance(row["payload"], str) else []
     return cache
 
 
@@ -150,7 +152,6 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
                 score, dt = _score_news_item(item)
                 scored.append((score, dt, item))
 
-        # Also blend in a few broad market headlines for that day.
         general_payload = _get_json_with_cache("https://finnhub.io/api/v1/news?category=general&minId=0", headers, cache)
         for item in general_payload:
             ts = item.get("datetime")
@@ -199,13 +200,90 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
     return df
 
 
+def _normalize_impact(raw: Any) -> str:
+    impact = _clean_text(raw).lower()
+    if "holiday" in impact:
+        return "Holiday"
+    if "high" in impact:
+        return "High Impact Expected"
+    if "medium" in impact:
+        return "Medium Impact Expected"
+    if "low" in impact:
+        return "Low Impact Expected"
+    return _clean_text(raw) or "Event"
+
+
+def _parse_calendar_time(raw: Any) -> time:
+    text = _clean_text(raw).lower()
+    if not text:
+        return time(0, 0)
+    try:
+        return datetime.strptime(text, "%I:%M%p").time()
+    except ValueError:
+        pass
+    for fmt in ("%H:%M", "%I%p", "%I:%M %p"):
+        try:
+            return datetime.strptime(text, fmt).time()
+        except ValueError:
+            continue
+    return time(0, 0)
+
+
+def download_weekly_calendar(output_csv: Path | str = WEEKLY_CALENDAR_CSV) -> Path:
+    output_path = Path(output_csv)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    resp = requests.get(FINNHUB_WEEKLY_CALENDAR_URL, timeout=30)
+    resp.raise_for_status()
+    output_path.write_bytes(resp.content)
+    return output_path
+
+
+def load_weekly_usd_calendar(calendar_csv: Path | str = WEEKLY_CALENDAR_CSV, auto_download: bool = False) -> pd.DataFrame:
+    calendar_path = Path(calendar_csv)
+    if auto_download or not calendar_path.exists():
+        download_weekly_calendar(calendar_path)
+
+    df = pd.read_csv(calendar_path)
+    if df.empty:
+        return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous", "Kind", "Priority"])
+
+    df.columns = [str(c).strip() for c in df.columns]
+    country_col = "Country" if "Country" in df.columns else "country"
+    df = df[df[country_col].astype(str).str.upper().eq("USD")].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous", "Kind", "Priority"])
+
+    df["Date"] = pd.to_datetime(df["Date"], format="%m-%d-%Y", errors="coerce")
+    df["parsed_time"] = df["Time"].apply(_parse_calendar_time)
+    df = df.dropna(subset=["Date"])
+
+    dt_series = [
+        pd.Timestamp(datetime.combine(d.date(), t), tz="America/New_York")
+        for d, t in zip(df["Date"], df["parsed_time"])
+    ]
+
+    result = pd.DataFrame({
+        "DateTime": [dt.isoformat() for dt in dt_series],
+        "Currency": "USD",
+        "Impact": df["Impact"].apply(_normalize_impact),
+        "Event": df["Title"].apply(_clean_text),
+        "Actual": "",
+        "Forecast": df.get("Forecast", pd.Series([""] * len(df))).fillna("").astype(str),
+        "Previous": df.get("Previous", pd.Series([""] * len(df))).fillna("").astype(str),
+        "Kind": "macro",
+        "Priority": 5,
+    })
+    result["DateTime"] = pd.to_datetime(result["DateTime"], utc=True)
+    result = result.sort_values("DateTime").reset_index(drop=True)
+    return result
+
+
 def fetch_official_macro(start_date: str, end_date: str, max_items_per_day: int = MAX_MACRO_PER_DAY) -> pd.DataFrame:
     """Aggregate reachable official US macro schedules from BEA and Federal Reserve."""
     start = pd.Timestamp(start_date).date()
     end = pd.Timestamp(end_date).date()
     records: list[dict[str, Any]] = []
 
-    # BEA schedule
     bea = requests.get("https://www.bea.gov/news/schedule", timeout=30)
     bea.raise_for_status()
     soup = BeautifulSoup(bea.text, "html.parser")
@@ -242,7 +320,6 @@ def fetch_official_macro(start_date: str, end_date: str, max_items_per_day: int 
         else:
             i += 1
 
-    # Federal Reserve press releases feed as macro/policy markers
     try:
         fed = requests.get("https://www.federalreserve.gov/feeds/press_all.xml", timeout=30)
         fed.raise_for_status()
@@ -281,16 +358,31 @@ def fetch_official_macro(start_date: str, end_date: str, max_items_per_day: int 
 
     df["DateTime"] = pd.to_datetime(df["DateTime"], utc=True)
     df["date"] = df["DateTime"].dt.tz_convert("America/New_York").dt.date
-    df = (df.sort_values(["date", "Priority", "DateTime"], ascending=[True, False, True])
-            .groupby("date", group_keys=False)
-            .head(max_items_per_day)
-            .drop(columns=["date"]))
+    df = (
+        df.sort_values(["date", "Priority", "DateTime"], ascending=[True, False, True])
+        .groupby("date", group_keys=False)
+        .head(max_items_per_day)
+        .drop(columns=["date"])
+    )
     return df.reset_index(drop=True)
 
 
 def build_combined_events(start_date: str, end_date: str) -> pd.DataFrame:
-    news_df = fetch_finnhub_news(start_date, end_date, max_items_per_day=MAX_NEWS_PER_DAY)
-    macro_df = fetch_official_macro(start_date, end_date, max_items_per_day=MAX_MACRO_PER_DAY)
+    start = pd.Timestamp(start_date).date()
+    end = pd.Timestamp(end_date).date()
+
+    news_df = fetch_finnhub_news(start.isoformat(), end.isoformat(), max_items_per_day=MAX_NEWS_PER_DAY)
+    weekly_calendar_df = load_weekly_usd_calendar(auto_download=False)
+    macro_df = weekly_calendar_df
+    if macro_df.empty:
+        macro_df = fetch_official_macro(start.isoformat(), end.isoformat(), max_items_per_day=MAX_MACRO_PER_DAY)
+
+    if not macro_df.empty:
+        macro_df["DateTime"] = pd.to_datetime(macro_df["DateTime"], utc=True)
+        macro_df = macro_df[
+            macro_df["DateTime"].dt.tz_convert("America/New_York").dt.date.between(start, end)
+        ].reset_index(drop=True)
+
     combined = pd.concat([news_df, macro_df], ignore_index=True)
     if combined.empty:
         return combined
@@ -300,17 +392,12 @@ def build_combined_events(start_date: str, end_date: str) -> pd.DataFrame:
 
     out_frames = []
     for day, group in combined.groupby("date"):
-        macros = group[group["Kind"] == "macro"].sort_values(["Priority", "DateTime"], ascending=[False, True]).head(MAX_MACRO_PER_DAY)
+        macros = group[group["Kind"] == "macro"].sort_values(["Priority", "DateTime"], ascending=[False, True])
         news = group[group["Kind"] == "news"].sort_values(["Priority", "DateTime"], ascending=[False, True]).head(MAX_NEWS_PER_DAY)
-        merged = pd.concat([macros, news], ignore_index=True).sort_values(["Kind", "Priority", "DateTime"], ascending=[True, False, True])
-        if len(merged) < MIN_ITEMS_PER_DAY:
-            filler = group.drop(merged.index, errors='ignore').sort_values(["Priority", "DateTime"], ascending=[False, True])
-            needed = MIN_ITEMS_PER_DAY - len(merged)
-            merged = pd.concat([merged, filler.head(needed)], ignore_index=True)
-        merged = merged.head(MAX_ITEMS_PER_DAY)
+        merged = pd.concat([macros, news], ignore_index=True).sort_values(["DateTime", "Priority"], ascending=[True, False])
         out_frames.append(merged)
 
-    combined = pd.concat(out_frames, ignore_index=True).drop(columns=["date"], errors='ignore')
+    combined = pd.concat(out_frames, ignore_index=True).drop(columns=["date"], errors="ignore")
     return combined.reset_index(drop=True)
 
 
@@ -343,5 +430,7 @@ def save_combined_events(start_date: str, end_date: str, output_csv: Path | str 
 if __name__ == "__main__":
     end = pd.Timestamp.now(tz="America/New_York").date()
     start = end - timedelta(days=14)
+    if not WEEKLY_CALENDAR_CSV.exists():
+        download_weekly_calendar()
     df = save_combined_events(start.isoformat(), end.isoformat())
     print(f"saved {len(df)} rows -> {COMBINED_EVENTS_CSV}")
