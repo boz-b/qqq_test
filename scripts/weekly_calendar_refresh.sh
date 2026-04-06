@@ -19,17 +19,10 @@ PY
 )
 EOF
 
-echo "[$(date --iso-8601=seconds)] Downloading weekly ForexFactory calendar CSV"
-python3 - <<'PY'
-from news_feeds import download_weekly_calendar
-path = download_weekly_calendar()
-print(f"downloaded {path}")
-PY
-
-echo "[$(date --iso-8601=seconds)] Rebuilding combined events from weekly USD calendar + news: ${START_DATE} -> ${END_DATE}"
+echo "[$(date --iso-8601=seconds)] Refreshing weekly USD calendar only: ${START_DATE} -> ${END_DATE}"
 python3 - <<PY
-from news_feeds import save_combined_events
-save_combined_events("${START_DATE}", "${END_DATE}")
+from news_feeds import save_calendar_only_events
+save_calendar_only_events("${START_DATE}", "${END_DATE}")
 PY
 
 echo "[$(date --iso-8601=seconds)] Exporting static dashboard data"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, time, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +21,6 @@ WEEKLY_CALENDAR_CSV = DATA_DIR / "ff_calendar_thisweek.csv"
 FINNHUB_ENV_FILES = [BASE_DIR / ".env", BASE_DIR / ".env.finnhub"]
 FINNHUB_WEEKLY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.csv"
 NEWS_SYMBOLS = ["QQQ", "SPY", "NVDA", "GOOGL", "META"]
-MIN_ITEMS_PER_DAY = 5
-MAX_ITEMS_PER_DAY = 7
 MAX_MACRO_PER_DAY = 5
 MAX_NEWS_PER_DAY = 2
 
@@ -54,7 +52,6 @@ def _save_request_cache(cache: dict[str, list[dict[str, Any]]]) -> None:
 def _get_json_with_cache(url: str, headers: dict[str, str], cache: dict[str, list[dict[str, Any]]], retries: int = 3) -> list[dict[str, Any]]:
     if url in cache:
         return cache[url]
-    last_exc = None
     for _ in range(retries):
         try:
             resp = requests.get(url, headers=headers, timeout=30)
@@ -62,8 +59,8 @@ def _get_json_with_cache(url: str, headers: dict[str, str], cache: dict[str, lis
             payload = resp.json()
             cache[url] = payload
             return payload
-        except Exception as exc:
-            last_exc = exc
+        except Exception:
+            continue
     if url in cache:
         return cache[url]
     return []
@@ -297,7 +294,6 @@ def fetch_official_macro(start_date: str, end_date: str, max_items_per_day: int 
     while i < len(lines) - 3:
         month_day = lines[i]
         time_str = lines[i + 1]
-        kind = lines[i + 2]
         event = lines[i + 3]
         parts = month_day.split()
         if len(parts) == 2 and parts[0] in months and parts[1].isdigit() and ":" in time_str:
@@ -367,21 +363,28 @@ def fetch_official_macro(start_date: str, end_date: str, max_items_per_day: int 
     return df.reset_index(drop=True)
 
 
-def build_combined_events(start_date: str, end_date: str) -> pd.DataFrame:
+def _filter_date_range(df: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
+    if df.empty:
+        return df
     start = pd.Timestamp(start_date).date()
     end = pd.Timestamp(end_date).date()
+    out = df.copy()
+    out["DateTime"] = pd.to_datetime(out["DateTime"], utc=True)
+    mask = out["DateTime"].dt.tz_convert("America/New_York").dt.date.between(start, end)
+    return out.loc[mask].sort_values("DateTime").reset_index(drop=True)
 
-    news_df = fetch_finnhub_news(start.isoformat(), end.isoformat(), max_items_per_day=MAX_NEWS_PER_DAY)
-    weekly_calendar_df = load_weekly_usd_calendar(auto_download=False)
-    macro_df = weekly_calendar_df
-    if macro_df.empty:
-        macro_df = fetch_official_macro(start.isoformat(), end.isoformat(), max_items_per_day=MAX_MACRO_PER_DAY)
 
-    if not macro_df.empty:
-        macro_df["DateTime"] = pd.to_datetime(macro_df["DateTime"], utc=True)
-        macro_df = macro_df[
-            macro_df["DateTime"].dt.tz_convert("America/New_York").dt.date.between(start, end)
-        ].reset_index(drop=True)
+def build_calendar_only_events(start_date: str, end_date: str, auto_download: bool = False) -> pd.DataFrame:
+    weekly_calendar_df = load_weekly_usd_calendar(auto_download=auto_download)
+    if weekly_calendar_df.empty:
+        macro_df = fetch_official_macro(start_date, end_date, max_items_per_day=MAX_MACRO_PER_DAY)
+        return _filter_date_range(macro_df, start_date, end_date)
+    return _filter_date_range(weekly_calendar_df, start_date, end_date)
+
+
+def build_combined_events(start_date: str, end_date: str) -> pd.DataFrame:
+    news_df = fetch_finnhub_news(start_date, end_date, max_items_per_day=MAX_NEWS_PER_DAY)
+    macro_df = build_calendar_only_events(start_date, end_date, auto_download=False)
 
     combined = pd.concat([news_df, macro_df], ignore_index=True)
     if combined.empty:
@@ -391,7 +394,7 @@ def build_combined_events(start_date: str, end_date: str) -> pd.DataFrame:
     combined["date"] = combined["DateTime"].dt.tz_convert("America/New_York").dt.date
 
     out_frames = []
-    for day, group in combined.groupby("date"):
+    for _, group in combined.groupby("date"):
         macros = group[group["Kind"] == "macro"].sort_values(["Priority", "DateTime"], ascending=[False, True])
         news = group[group["Kind"] == "news"].sort_values(["Priority", "DateTime"], ascending=[False, True]).head(MAX_NEWS_PER_DAY)
         merged = pd.concat([macros, news], ignore_index=True).sort_values(["DateTime", "Priority"], ascending=[True, False])
@@ -401,13 +404,8 @@ def build_combined_events(start_date: str, end_date: str) -> pd.DataFrame:
     return combined.reset_index(drop=True)
 
 
-def save_combined_events(start_date: str, end_date: str, output_csv: Path | str = COMBINED_EVENTS_CSV) -> pd.DataFrame:
-    df = build_combined_events(start_date, end_date)
+def _merge_event_archive(out: pd.DataFrame, output_csv: Path | str) -> pd.DataFrame:
     output_csv = Path(output_csv)
-    if df.empty:
-        raise RuntimeError("Combined news/macro feed is empty")
-    out = df[["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous"]].copy()
-
     archive = pd.DataFrame(columns=out.columns)
     if NEWS_CSV.exists():
         try:
@@ -427,10 +425,24 @@ def save_combined_events(start_date: str, end_date: str, output_csv: Path | str 
     return merged_out
 
 
+def save_calendar_only_events(start_date: str, end_date: str, output_csv: Path | str = COMBINED_EVENTS_CSV) -> pd.DataFrame:
+    df = build_calendar_only_events(start_date, end_date, auto_download=True)
+    if df.empty:
+        raise RuntimeError("Weekly USD calendar feed is empty")
+    out = df[["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous"]].copy()
+    return _merge_event_archive(out, output_csv)
+
+
+def save_combined_events(start_date: str, end_date: str, output_csv: Path | str = COMBINED_EVENTS_CSV) -> pd.DataFrame:
+    df = build_combined_events(start_date, end_date)
+    if df.empty:
+        raise RuntimeError("Combined news/macro feed is empty")
+    out = df[["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous"]].copy()
+    return _merge_event_archive(out, output_csv)
+
+
 if __name__ == "__main__":
     end = pd.Timestamp.now(tz="America/New_York").date()
     start = end - timedelta(days=14)
-    if not WEEKLY_CALENDAR_CSV.exists():
-        download_weekly_calendar()
     df = save_combined_events(start.isoformat(), end.isoformat())
     print(f"saved {len(df)} rows -> {COMBINED_EVENTS_CSV}")
