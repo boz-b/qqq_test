@@ -379,9 +379,8 @@
 
     <div id="chart-wrap">
       <!--
-        The <canvas> is where Chart.js renders the line chart.
-        Width/height are set to 100% via CSS; Chart.js reads the parent
-        div's pixel dimensions at render time.
+        The <canvas> is where Chart.js renders the close-price line chart plus
+        same-window volume bars on a secondary axis.
       -->
       <canvas id="price-chart"></canvas>
     </div>
@@ -651,7 +650,8 @@
     }
 
     const labels = data.chart.labels;   // ["08:00", "08:01", … "11:00"]
-    const prices = data.chart.prices;   // [596.02, 596.10, …]  (null = missing bar)
+    const prices = data.chart.prices;   // close prices [596.02, 596.10, …]
+    const volume = data.chart.volume;   // volume bars [12000, 18000, …]
     const pc     = data.prior_close;    // float | null
 
     // ── Annotations: vertical session lines + horizontal prior-close line ────
@@ -726,18 +726,35 @@
     chartInstance = new Chart(canvasEl, {
       type: 'line',
       data: {
-        labels:   labels,           // x-axis: time strings
-        datasets: [{
-          label:            'QQQ close',
-          data:             prices,  // y-axis: price floats
-          borderColor:      C.blue,  // blue price line
-          borderWidth:      1.5,     // thin but readable
-          pointRadius:      0,       // hide dots — 181 points would be cluttered
-          pointHoverRadius: 4,       // but show one on hover for the tooltip
-          tension:          0,       // straight segments between points
-          spanGaps:         true,    // connect across null (missing 1-min bars)
-          fill:             false,   // no shaded area under the line
-        }],
+        labels: labels,
+        datasets: [
+          {
+            type: 'bar',
+            label: 'QQQ volume',
+            data: volume,
+            yAxisID: 'yVolume',
+            backgroundColor: 'rgba(88, 166, 255, 0.18)',
+            borderColor: 'rgba(88, 166, 255, 0.35)',
+            borderWidth: 1,
+            barPercentage: 1.0,
+            categoryPercentage: 1.0,
+            order: 2,
+          },
+          {
+            type: 'line',
+            label: 'QQQ close',
+            data: prices,
+            yAxisID: 'y',
+            borderColor: C.blue,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            tension: 0,
+            spanGaps: true,
+            fill: false,
+            order: 1,
+          }
+        ],
       },
 
       options: {
@@ -773,8 +790,13 @@
             titleFont: { family: 'ui-monospace, monospace', size: 11 },
             bodyFont:  { family: 'ui-monospace, monospace', size: 12 },
             callbacks: {
-              title: items => items[0].label,                    // "09:31"
-              label: item  => ' $' + item.parsed.y.toFixed(2),  // " $481.73"
+              title: items => items[0].label,
+              label: item => {
+                if (item.dataset.yAxisID === 'yVolume') {
+                  return ' Vol ' + Number(item.parsed.y).toLocaleString();
+                }
+                return ' Close $' + item.parsed.y.toFixed(2);
+              },
             },
           },
 
@@ -806,9 +828,24 @@
             ticks: {
               color:    C.muted,
               font:     { family: 'ui-monospace, monospace', size: 10 },
-              callback: v => '$' + v.toFixed(0),  // "$480", "$490", …
+              callback: v => '$' + v.toFixed(0),
             },
             grid: { color: C.border },
+          },
+          yVolume: {
+            position: 'left',
+            beginAtZero: true,
+            ticks: {
+              color: C.muted,
+              font: { family: 'ui-monospace, monospace', size: 10 },
+              callback: v => {
+                const n = Number(v);
+                if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+                if (n >= 1_000) return (n / 1_000).toFixed(0) + 'K';
+                return String(n);
+              },
+            },
+            grid: { display: false },
           },
         },
       },

@@ -459,12 +459,16 @@ def get_day_data(date_str: str) -> dict:
         (day_bars.index.time <= dtime(11, 0))
     ]
 
-    # Build parallel lists for Chart.js: x-axis labels + y-axis prices.
-    # strftime("%H:%M") converts each Timestamp to "HH:MM" Eastern string.
+    # Build parallel lists for Chart.js: x-axis labels + y-axis prices/volume.
+    # Price explicitly uses the close column.
     chart_labels = [ts.strftime("%H:%M") for ts in chart_bars.index]
     chart_prices = [
-        round(float(p), 2) if np.isfinite(p) else None   # None serialises to JSON null
+        round(float(p), 2) if np.isfinite(p) else None
         for p in chart_bars["close"]
+    ]
+    chart_volume = [
+        int(v) if np.isfinite(v) else 0
+        for v in chart_bars["volume"]
     ]
 
     # ── prior close ──────────────────────────────────────────────────────────
@@ -480,7 +484,8 @@ def get_day_data(date_str: str) -> dict:
         "date":        date_str,
         "chart": {
             "labels":  chart_labels,    # ["08:00", "08:01", …, "11:00"]
-            "prices":  chart_prices,    # [596.02, 596.10, …]
+            "prices":  chart_prices,    # close prices [596.02, 596.10, …]
+            "volume":  chart_volume,    # bar volume [12345, 15002, …]
         },
         "prior_close": round(prev_close, 2) if prev_close is not None else None,
         "pm_stats":    pm,              # gap_pct, direction, momentum_*, reversal_flag
@@ -1570,6 +1575,7 @@ if __name__ == "__main__":
         print(f"PM stats: {data['pm_stats']}")
         print(f"Chart: {len(data['chart']['labels'])} pts  "
               f"({data['chart']['labels'][0]} → {data['chart']['labels'][-1]})")
+        print(f"Volume points: {len(data['chart']['volume'])}")
         print(f"FF events: {len(data['ff_events'])}")
         # Verify the handler class is importable and has the right methods
         assert hasattr(DashboardHandler, "do_GET")
