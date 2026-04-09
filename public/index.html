@@ -423,6 +423,8 @@
   // Kept at module scope so updateChart() can call .destroy() before recreating.
   // Without destroy() a second chart on the same canvas throws an error.
   let chartInstance = null;
+  let measurePoints = [];
+  let measurementState = null;
 
   // ── Colour palette (must match CSS :root custom properties) ───────────────
   // Chart.js options live in JS, not CSS, so we pass hex values explicitly.
@@ -642,6 +644,91 @@
     }).join('');
   }
 
+  function formatSignedDollar(v) {
+    const sign = v > 0 ? '+' : v < 0 ? '-' : '';
+    return `${sign}$${Math.abs(v).toFixed(2)}`;
+  }
+
+  function formatSignedPct(v) {
+    const sign = v > 0 ? '+' : v < 0 ? '-' : '';
+    return `${sign}${Math.abs(v).toFixed(2)}%`;
+  }
+
+  function buildMeasurementLines(start, current) {
+    const delta = current.price - start.price;
+    const pct = start.price ? ((current.price / start.price) - 1) * 100 : 0;
+    const minutes = Math.round((current.x - start.x) / 60000);
+    return [
+      ` From ${start.label} to ${current.label}`,
+      ` Start close $${start.price.toFixed(2)}`,
+      ` Current close $${current.price.toFixed(2)}`,
+      ` Move ${formatSignedDollar(delta)}`,
+      ` Change ${formatSignedPct(pct)}`,
+      ` Minutes ${minutes >= 0 ? '+' : ''}${minutes}`,
+    ];
+  }
+
+  function findNearestMeasurePoint(chart, evt) {
+    if (!chart || !measurePoints.length) return null;
+    const hits = chart.getElementsAtEventForMode(evt, 'nearest', { intersect: false, axis: 'x' }, false);
+    if (!hits || !hits.length) return null;
+
+    let best = null;
+    let bestDist = Infinity;
+    for (const point of measurePoints) {
+      const dist = Math.abs(point.index - hits[0].index);
+      if (dist < bestDist) {
+        best = point;
+        bestDist = dist;
+      }
+    }
+    return best;
+  }
+
+  function clearMeasurement(chart) {
+    measurementState = null;
+    if (!chart) return;
+    const tooltip = chart.tooltip;
+    if (tooltip) tooltip.setActiveElements([], { x: 0, y: 0 });
+    chart.update('none');
+  }
+
+  function syncMeasurementTooltip(chart, evt) {
+    if (!chart || !measurementState) return;
+    const point = findNearestMeasurePoint(chart, evt);
+    if (!point) return;
+
+    measurementState.current = point;
+    const tooltip = chart.tooltip;
+    if (tooltip) {
+      tooltip.setActiveElements([{ datasetIndex: 2, index: point.index }], { x: evt.x, y: evt.y });
+    }
+    chart.update('none');
+  }
+
+  function attachMeasurementHandlers(chart) {
+    const canvas = chart.canvas;
+    if (!canvas) return;
+
+    canvas.onpointerdown = (evt) => {
+      const point = findNearestMeasurePoint(chart, evt);
+      if (!point) return;
+      measurementState = { start: point, current: point };
+      syncMeasurementTooltip(chart, evt);
+    };
+
+    canvas.onpointermove = (evt) => {
+      if (measurementState) {
+        syncMeasurementTooltip(chart, evt);
+      }
+    };
+
+    const stop = () => clearMeasurement(chart);
+    canvas.onpointerup = stop;
+    canvas.onpointerleave = stop;
+    canvas.onpointercancel = stop;
+  }
+
   // =========================================================================
   // updateChart(data) — destroy old chart, build new Chart.js instance
   // =========================================================================
@@ -679,6 +766,11 @@
       .map(d => ({ x: d.x, o: d.o, h: d.h, l: d.l, c: d.c }));
 
     const volumeBars = allPoints.map(d => ({ x: d.x, y: d.v }));
+
+    measurePoints = allPoints
+      .filter(d => d.label >= '09:30' && Number.isFinite(d.c))
+      .map((d, i) => ({ index: i, x: d.x, label: d.label, price: d.c }));
+    measurementState = null;
 
     const sessionStart = luxon.DateTime.fromISO(`${data.date}T08:00`, { zone: 'America/New_York' }).toMillis();
     const sessionEnd   = luxon.DateTime.fromISO(`${data.date}T11:00`, { zone: 'America/New_York' }).toMillis();
@@ -851,6 +943,10 @@
                 return luxon.DateTime.fromMillis(Number(x)).toFormat('HH:mm');
               },
               label: item => {
+                if (measurementState && measurementState.start && measurementState.current) {
+                  return buildMeasurementLines(measurementState.start, measurementState.current);
+                }
+
                 if (item.dataset.yAxisID === 'yVolume') {
                   return ' Vol ' + Number(item.parsed.y).toLocaleString();
                 }
@@ -932,6 +1028,8 @@
         },
       },
     });
+
+    attachMeasurementHandlers(chartInstance);
   }
 
   // =========================================================================
