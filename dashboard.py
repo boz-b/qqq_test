@@ -129,11 +129,10 @@ def load_daily() -> pd.DataFrame:
     """
     df = pd.read_csv(_resolve_csv_path(DAILY_CSV, LEGACY_DAILY_CSV))
 
-    # Same UTC → Eastern pattern as intraday
-    df["date"] = (
-        pd.to_datetime(df["date"], utc=True)
-          .dt.tz_convert(EASTERN)
-    )
+    # Daily CSV should be interpreted as trading-day labels, not converted wall
+    # times. Parse to pandas datetime and keep the calendar date aligned with
+    # the original daily bar label from yfinance.
+    df["date"] = pd.to_datetime(df["date"])
 
     df = df.set_index("date").sort_index()
 
@@ -459,10 +458,21 @@ def get_day_data(date_str: str) -> dict:
         (day_bars.index.time <= dtime(11, 0))
     ]
 
-    # Build parallel lists for Chart.js: x-axis labels + y-axis prices/volume.
-    # Price explicitly uses the close column.
+    # Build parallel lists for Chart.js: x-axis labels + OHLC/volume arrays.
     chart_labels = [ts.strftime("%H:%M") for ts in chart_bars.index]
-    chart_prices = [
+    chart_open = [
+        round(float(p), 2) if np.isfinite(p) else None
+        for p in chart_bars["open"]
+    ]
+    chart_high = [
+        round(float(p), 2) if np.isfinite(p) else None
+        for p in chart_bars["high"]
+    ]
+    chart_low = [
+        round(float(p), 2) if np.isfinite(p) else None
+        for p in chart_bars["low"]
+    ]
+    chart_close = [
         round(float(p), 2) if np.isfinite(p) else None
         for p in chart_bars["close"]
     ]
@@ -484,7 +494,10 @@ def get_day_data(date_str: str) -> dict:
         "date":        date_str,
         "chart": {
             "labels":  chart_labels,    # ["08:00", "08:01", …, "11:00"]
-            "prices":  chart_prices,    # close prices [596.02, 596.10, …]
+            "open":    chart_open,
+            "high":    chart_high,
+            "low":     chart_low,
+            "close":   chart_close,
             "volume":  chart_volume,    # bar volume [12345, 15002, …]
         },
         "prior_close": round(prev_close, 2) if prev_close is not None else None,

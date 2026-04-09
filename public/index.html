@@ -12,7 +12,10 @@
     boundary lines entirely on an HTML5 <canvas> element — no SVG, no D3.
     The chartjs-plugin-annotation plugin adds the vertical/horizontal lines.
   -->
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.1/dist/chartjs-chart-financial.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 
   <style>
@@ -273,7 +276,7 @@
     <!-- Dashboard title -->
     <div id="sidebar-header">
       <h1>QQQ Intraday</h1>
-      <p>8:00 – 11:00 AM ET &nbsp;·&nbsp; 1-min bars</p>
+      <p>8:00 – 11:00 AM ET &nbsp;·&nbsp; 1-min candles</p>
     </div>
 
     <!-- ── Date picker ─────────────────────────────────────────────────── -->
@@ -650,9 +653,25 @@
     }
 
     const labels = data.chart.labels;   // ["08:00", "08:01", … "11:00"]
-    const prices = data.chart.prices;   // close prices [596.02, 596.10, …]
+    const open   = data.chart.open;
+    const high   = data.chart.high;
+    const low    = data.chart.low;
+    const close  = data.chart.close;
     const volume = data.chart.volume;   // volume bars [12000, 18000, …]
     const pc     = data.prior_close;    // float | null
+
+    const candles = labels.map((label, i) => ({
+      x: luxon.DateTime.fromISO(`${data.date}T${label}`, { zone: 'America/New_York' }).toMillis(),
+      o: open[i],
+      h: high[i],
+      l: low[i],
+      c: close[i],
+    }));
+
+    const volumeBars = labels.map((label, i) => ({
+      x: luxon.DateTime.fromISO(`${data.date}T${label}`, { zone: 'America/New_York' }).toMillis(),
+      y: volume[i],
+    }));
 
     // ── Annotations: vertical session lines + horizontal prior-close line ────
     const annotations = {};
@@ -662,7 +681,7 @@
     annotations.openLine = {
       type:        'line',
       scaleID:     'x',
-      value:       '09:30',        // label string that marks the open
+      value:       luxon.DateTime.fromISO(`${data.date}T09:30`, { zone: 'America/New_York' }).toMillis(),
       borderColor: C.green,
       borderWidth: 1,
       borderDash:  [4, 4],         // 4 px on, 4 px off
@@ -682,7 +701,7 @@
     annotations.w2Line = {
       type:        'line',
       scaleID:     'x',
-      value:       '10:00',
+      value:       luxon.DateTime.fromISO(`${data.date}T10:00`, { zone: 'America/New_York' }).toMillis(),
       borderColor: C.purple,
       borderWidth: 1,
       borderDash:  [4, 4],
@@ -731,7 +750,7 @@
           {
             type: 'bar',
             label: 'QQQ volume',
-            data: volume,
+            data: volumeBars,
             yAxisID: 'yVolume',
             backgroundColor: 'rgba(88, 166, 255, 0.18)',
             borderColor: 'rgba(88, 166, 255, 0.35)',
@@ -741,17 +760,20 @@
             order: 2,
           },
           {
-            type: 'line',
-            label: 'QQQ close',
-            data: prices,
+            type: 'candlestick',
+            label: 'QQQ OHLC',
+            data: candles,
             yAxisID: 'y',
-            borderColor: C.blue,
-            borderWidth: 1.5,
-            pointRadius: 0,
-            pointHoverRadius: 4,
-            tension: 0,
-            spanGaps: true,
-            fill: false,
+            color: {
+              up: C.green,
+              down: C.red,
+              unchanged: C.blue,
+            },
+            borderColor: {
+              up: C.green,
+              down: C.red,
+              unchanged: C.blue,
+            },
             order: 1,
           }
         ],
@@ -790,12 +812,18 @@
             titleFont: { family: 'ui-monospace, monospace', size: 11 },
             bodyFont:  { family: 'ui-monospace, monospace', size: 12 },
             callbacks: {
-              title: items => items[0].label,
+              title: items => luxon.DateTime.fromMillis(items[0].parsed.x).toFormat('HH:mm'),
               label: item => {
                 if (item.dataset.yAxisID === 'yVolume') {
                   return ' Vol ' + Number(item.parsed.y).toLocaleString();
                 }
-                return ' Close $' + item.parsed.y.toFixed(2);
+                const raw = item.raw || {};
+                return [
+                  ' Open $' + Number(raw.o).toFixed(2),
+                  ' High $' + Number(raw.h).toFixed(2),
+                  ' Low $' + Number(raw.l).toFixed(2),
+                  ' Close $' + Number(raw.c).toFixed(2),
+                ];
               },
             },
           },
@@ -807,16 +835,21 @@
         scales: {
           // X-axis: category scale (string labels)
           x: {
+            type: 'time',
+            time: {
+              unit: 'minute',
+              displayFormats: { minute: 'HH:mm' },
+              tooltipFormat: 'HH:mm',
+            },
             ticks: {
               color:       C.muted,
-              maxRotation: 0,      // keep labels horizontal
+              maxRotation: 0,
               font:        { family: 'ui-monospace, monospace', size: 10 },
-              // Show a tick label only on exact :00 and :30 minute marks to
-              // avoid crowding 181 labels onto the axis.
-              callback: function(value, index) {
-                const lbl = this.getLabelForValue(index);
-                return (lbl && (lbl.endsWith(':00') || lbl.endsWith(':30')))
-                  ? lbl : '';
+              source: 'auto',
+              callback: function(value) {
+                const dt = luxon.DateTime.fromMillis(Number(value));
+                const lbl = dt.toFormat('HH:mm');
+                return (lbl.endsWith(':00') || lbl.endsWith(':30')) ? lbl : '';
               },
             },
             grid: { color: C.border },

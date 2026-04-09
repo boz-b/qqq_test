@@ -353,11 +353,14 @@ def fetch_daily(symbol: str = SYMBOL, period: str = "2y") -> pd.DataFrame:
         df.columns = [c.lower() for c in df.columns]
         # ↑ Simple lowercase if columns are already flat.
 
-    df = _to_eastern(df)
-    # ↑ Convert timestamp index to Eastern timezone.
+    # Daily bars from yfinance are trading-day labels, not intraday timestamps.
+    # Do NOT run them through _to_eastern(): that would treat naive midnight
+    # dates as UTC and shift them back to the prior calendar day in New York.
+    # Keep them as plain daily labels so prior-close lookups stay aligned.
+    df.index = pd.to_datetime(df.index)
 
     df.index.name = "date"
-    # ↑ Names the index "date" (daily bars only need a date, not a full datetime).
+    # ↑ Names the index "date" (daily bars only need a trading date label).
 
     df.to_csv(DAILY_CSV)
     # ↑ Saves to the daily CSV cache file.
@@ -386,10 +389,10 @@ def load_daily(force_refresh: bool = False) -> pd.DataFrame:
     df.columns = [c.lower() for c in df.columns]
     # ↑ Lowercase all column names.
 
-    # Parse index robustly: use utc=True to handle DST-mixed offsets, then convert
-    # ↑ Comment explaining WHY we use utc=True (the CSV stores timestamps with mixed DST offsets).
-    df.index = pd.to_datetime(df.index, utc=True).tz_convert(EASTERN)
-    # ↑ Same safe parsing pattern: parse as UTC first, then convert to Eastern.
+    # Daily CSV values represent trading-day labels. Parse them directly and
+    # keep that calendar date intact for prior-close lookups.
+    df.index = pd.to_datetime(df.index)
+    # ↑ Parse the saved daily labels without timezone shifting.
 
     df.index.name = "date"
     # ↑ Restore the index name.
