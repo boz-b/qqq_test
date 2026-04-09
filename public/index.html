@@ -826,9 +826,9 @@
         },
 
         interaction: {
-          mode:      'index',        // show tooltip at the closest x-index
-          intersect: false,          // fire tooltip even when not on a point
-          axis:      'x',
+          mode:      'nearest',      // follow the nearest rendered element
+          intersect: false,
+          axis:      'xy',
         },
 
         plugins: {
@@ -844,13 +844,19 @@
             titleFont: { family: 'ui-monospace, monospace', size: 11 },
             bodyFont:  { family: 'ui-monospace, monospace', size: 12 },
             callbacks: {
-              title: items => luxon.DateTime.fromMillis(items[0].parsed.x).toFormat('HH:mm'),
+              title: items => {
+                const item = items && items.length ? items[0] : null;
+                if (!item) return '';
+                const x = item.parsed && item.parsed.x !== undefined ? item.parsed.x : item.raw?.x;
+                return luxon.DateTime.fromMillis(Number(x)).toFormat('HH:mm');
+              },
               label: item => {
                 if (item.dataset.yAxisID === 'yVolume') {
                   return ' Vol ' + Number(item.parsed.y).toLocaleString();
                 }
+
                 const raw = item.raw || {};
-                if ('o' in raw) {
+                if ('o' in raw && 'h' in raw && 'l' in raw && 'c' in raw) {
                   return [
                     ' Open $' + Number(raw.o).toFixed(2),
                     ' High $' + Number(raw.h).toFixed(2),
@@ -858,7 +864,8 @@
                     ' Close $' + Number(raw.c).toFixed(2),
                   ];
                 }
-                return ' Close $' + Number(item.parsed.y).toFixed(2);
+
+                return ' Premarket close $' + Number(item.parsed.y).toFixed(2);
               },
             },
           },
