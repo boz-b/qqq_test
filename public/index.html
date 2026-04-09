@@ -660,24 +660,31 @@
     const volume = data.chart.volume;   // volume bars [12000, 18000, …]
     const pc     = data.prior_close;    // float | null
 
-    const candles = labels.map((label, i) => ({
+    const allPoints = labels.map((label, i) => ({
       x: luxon.DateTime.fromISO(`${data.date}T${label}`, { zone: 'America/New_York' }).toMillis(),
+      label,
       o: open[i],
       h: high[i],
       l: low[i],
       c: close[i],
+      v: volume[i],
     }));
 
-    const volumeBars = labels.map((label, i) => ({
-      x: luxon.DateTime.fromISO(`${data.date}T${label}`, { zone: 'America/New_York' }).toMillis(),
-      y: volume[i],
-    }));
+    const premarketLine = allPoints
+      .filter(d => d.label < '09:30')
+      .map(d => ({ x: d.x, y: d.c }));
+
+    const sessionCandles = allPoints
+      .filter(d => d.label >= '09:30')
+      .map(d => ({ x: d.x, o: d.o, h: d.h, l: d.l, c: d.c }));
+
+    const volumeBars = allPoints.map(d => ({ x: d.x, y: d.v }));
 
     const sessionStart = luxon.DateTime.fromISO(`${data.date}T08:00`, { zone: 'America/New_York' }).toMillis();
     const sessionEnd   = luxon.DateTime.fromISO(`${data.date}T11:00`, { zone: 'America/New_York' }).toMillis();
 
-    const finiteLows = candles.map(d => d.l).filter(v => Number.isFinite(v));
-    const finiteHighs = candles.map(d => d.h).filter(v => Number.isFinite(v));
+    const finiteLows = allPoints.map(d => d.l).filter(v => Number.isFinite(v));
+    const finiteHighs = allPoints.map(d => d.h).filter(v => Number.isFinite(v));
     const minLow = finiteLows.length ? Math.min(...finiteLows) : null;
     const maxHigh = finiteHighs.length ? Math.max(...finiteHighs) : null;
     const pricePad = (minLow !== null && maxHigh !== null)
@@ -771,9 +778,24 @@
             order: 2,
           },
           {
+          {
+            type: 'line',
+            label: 'QQQ premarket close',
+            data: premarketLine,
+            yAxisID: 'y',
+            borderColor: C.blue,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            pointHoverRadius: 3,
+            tension: 0,
+            spanGaps: true,
+            fill: false,
+            order: 1,
+          },
+          {
             type: 'candlestick',
-            label: 'QQQ OHLC',
-            data: candles,
+            label: 'QQQ regular session OHLC',
+            data: sessionCandles,
             yAxisID: 'y',
             color: {
               up: C.green,
@@ -829,12 +851,15 @@
                   return ' Vol ' + Number(item.parsed.y).toLocaleString();
                 }
                 const raw = item.raw || {};
-                return [
-                  ' Open $' + Number(raw.o).toFixed(2),
-                  ' High $' + Number(raw.h).toFixed(2),
-                  ' Low $' + Number(raw.l).toFixed(2),
-                  ' Close $' + Number(raw.c).toFixed(2),
-                ];
+                if ('o' in raw) {
+                  return [
+                    ' Open $' + Number(raw.o).toFixed(2),
+                    ' High $' + Number(raw.h).toFixed(2),
+                    ' Low $' + Number(raw.l).toFixed(2),
+                    ' Close $' + Number(raw.c).toFixed(2),
+                  ];
+                }
+                return ' Close $' + Number(item.parsed.y).toFixed(2);
               },
             },
           },
@@ -861,10 +886,13 @@
               autoSkip: false,
               font:        { family: 'ui-monospace, monospace', size: 10 },
               callback: function(value) {
-                return luxon.DateTime.fromMillis(Number(value)).toFormat('HH:mm');
+                const lbl = luxon.DateTime.fromMillis(Number(value)).toFormat('HH:mm');
+                return ['08:00', '08:30', '09:00', '09:30', '10:00', '10:30', '11:00'].includes(lbl)
+                  ? lbl
+                  : '';
               },
             },
-            grid: { color: C.border },
+            grid: { display: false },
           },
 
           // Y-axis: price scale, displayed on the right side (Bloomberg style)
