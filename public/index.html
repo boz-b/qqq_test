@@ -673,6 +673,17 @@
       y: volume[i],
     }));
 
+    const sessionStart = luxon.DateTime.fromISO(`${data.date}T08:00`, { zone: 'America/New_York' }).toMillis();
+    const sessionEnd   = luxon.DateTime.fromISO(`${data.date}T11:00`, { zone: 'America/New_York' }).toMillis();
+
+    const finiteLows = candles.map(d => d.l).filter(v => Number.isFinite(v));
+    const finiteHighs = candles.map(d => d.h).filter(v => Number.isFinite(v));
+    const minLow = finiteLows.length ? Math.min(...finiteLows) : null;
+    const maxHigh = finiteHighs.length ? Math.max(...finiteHighs) : null;
+    const pricePad = (minLow !== null && maxHigh !== null)
+      ? Math.max(0.5, (maxHigh - minLow) * 0.08)
+      : 1;
+
     // ── Annotations: vertical session lines + horizontal prior-close line ────
     const annotations = {};
 
@@ -836,20 +847,21 @@
           // X-axis: category scale (string labels)
           x: {
             type: 'time',
+            min: sessionStart,
+            max: sessionEnd,
             time: {
               unit: 'minute',
+              stepSize: 30,
               displayFormats: { minute: 'HH:mm' },
               tooltipFormat: 'HH:mm',
             },
             ticks: {
               color:       C.muted,
               maxRotation: 0,
+              autoSkip: false,
               font:        { family: 'ui-monospace, monospace', size: 10 },
-              source: 'auto',
               callback: function(value) {
-                const dt = luxon.DateTime.fromMillis(Number(value));
-                const lbl = dt.toFormat('HH:mm');
-                return (lbl.endsWith(':00') || lbl.endsWith(':30')) ? lbl : '';
+                return luxon.DateTime.fromMillis(Number(value)).toFormat('HH:mm');
               },
             },
             grid: { color: C.border },
@@ -858,16 +870,19 @@
           // Y-axis: price scale, displayed on the right side (Bloomberg style)
           y: {
             position: 'right',
+            min: minLow !== null ? (minLow - pricePad) : undefined,
+            max: maxHigh !== null ? (maxHigh + pricePad) : undefined,
             ticks: {
               color:    C.muted,
               font:     { family: 'ui-monospace, monospace', size: 10 },
-              callback: v => '$' + v.toFixed(0),
+              callback: v => '$' + Number(v).toFixed(0),
             },
             grid: { color: C.border },
           },
           yVolume: {
             position: 'left',
             beginAtZero: true,
+            grace: '5%',
             ticks: {
               color: C.muted,
               font: { family: 'ui-monospace, monospace', size: 10 },
