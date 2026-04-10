@@ -684,9 +684,64 @@
     return best;
   }
 
+  function applyMeasurementAnnotations(chart) {
+    if (!chart || !chart.options?.plugins?.annotation?.annotations) return;
+
+    const annotations = chart.options.plugins.annotation.annotations;
+    delete annotations.measureStart;
+    delete annotations.measureEnd;
+    delete annotations.dimLeft;
+    delete annotations.dimRight;
+
+    if (!measurementState || !measurementState.start || !measurementState.current) {
+      return;
+    }
+
+    const xScale = chart.scales.x;
+    if (!xScale) return;
+
+    const startX = Math.min(measurementState.start.x, measurementState.current.x);
+    const endX = Math.max(measurementState.start.x, measurementState.current.x);
+
+    annotations.measureStart = {
+      type: 'line',
+      scaleID: 'x',
+      value: measurementState.start.x,
+      borderColor: C.yellow,
+      borderWidth: 2,
+      borderDash: [6, 3],
+    };
+
+    annotations.measureEnd = {
+      type: 'line',
+      scaleID: 'x',
+      value: measurementState.current.x,
+      borderColor: C.yellow,
+      borderWidth: 2,
+      borderDash: [6, 3],
+    };
+
+    annotations.dimLeft = {
+      type: 'box',
+      xMin: xScale.min,
+      xMax: startX,
+      backgroundColor: 'rgba(13, 17, 23, 0.28)',
+      borderWidth: 0,
+    };
+
+    annotations.dimRight = {
+      type: 'box',
+      xMin: endX,
+      xMax: xScale.max,
+      backgroundColor: 'rgba(13, 17, 23, 0.28)',
+      borderWidth: 0,
+    };
+  }
+
   function clearMeasurement(chart) {
     measurementState = null;
     if (!chart) return;
+    applyMeasurementAnnotations(chart);
     const tooltip = chart.tooltip;
     if (tooltip) tooltip.setActiveElements([], { x: 0, y: 0 });
     chart.update('none');
@@ -698,6 +753,7 @@
     if (!point) return;
 
     measurementState.current = point;
+    applyMeasurementAnnotations(chart);
     const tooltip = chart.tooltip;
     if (tooltip) {
       tooltip.setActiveElements([{ datasetIndex: 2, index: point.index }], { x: evt.x, y: evt.y });
@@ -826,45 +882,6 @@
       },
     };
 
-    if (measurementState && measurementState.start && measurementState.current) {
-      const startX = Math.min(measurementState.start.x, measurementState.current.x);
-      const endX = Math.max(measurementState.start.x, measurementState.current.x);
-
-      annotations.measureStart = {
-        type: 'line',
-        scaleID: 'x',
-        value: measurementState.start.x,
-        borderColor: C.yellow,
-        borderWidth: 2,
-        borderDash: [6, 3],
-      };
-
-      annotations.measureEnd = {
-        type: 'line',
-        scaleID: 'x',
-        value: measurementState.current.x,
-        borderColor: C.yellow,
-        borderWidth: 2,
-        borderDash: [6, 3],
-      };
-
-      annotations.dimLeft = {
-        type: 'box',
-        xMin: sessionStart,
-        xMax: startX,
-        backgroundColor: 'rgba(13, 17, 23, 0.28)',
-        borderWidth: 0,
-      };
-
-      annotations.dimRight = {
-        type: 'box',
-        xMin: endX,
-        xMax: sessionEnd,
-        backgroundColor: 'rgba(13, 17, 23, 0.28)',
-        borderWidth: 0,
-      };
-    }
-
     // Horizontal dashed line at the prior-session closing price.
     // Only added when a valid prior close exists (null on the very first date).
     if (pc !== null && pc !== undefined) {
@@ -903,8 +920,8 @@
             backgroundColor: 'rgba(88, 166, 255, 0.18)',
             borderColor: 'rgba(88, 166, 255, 0.35)',
             borderWidth: 1,
-            barPercentage: 1.0,
-            categoryPercentage: 1.0,
+            barThickness: 3,
+            maxBarThickness: 4,
             order: 2,
           },
           {
