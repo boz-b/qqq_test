@@ -209,7 +209,7 @@ _SORTED_DAILY_DATES: list = sorted(_DAILY_CLOSES.keys())
 def get_available_dates() -> list[str]:
     """
     Return a sorted list of trading-date strings (YYYY-MM-DD) for which the
-    intraday CSV has at least one bar in the 8:00–11:00 AM window.
+    intraday CSV has at least one bar in the 9:00 AM–12:00 PM window.
 
     Only dates with chart-window data are included — days where the CSV has
     rows outside that window (e.g. only after-hours bars) are excluded.
@@ -223,22 +223,12 @@ def get_available_dates() -> list[str]:
         # No intraday data at all — return empty list so the UI can show a message
         return []
 
-    # Filter to bars that fall within the chart window (8:00 AM – 11:00 AM).
+    # Filter to bars that fall within the chart window (9:00 AM – 12:00 PM).
     # We only want dates that actually have data to display.
-    mask = (
-        (_INTRADAY.index.hour > 8)   |              # hour > 8 → definitely inside window
-        (_INTRADAY.index.hour == 8)                  # hour == 8 → also check minutes ≥ 0
-    ) & (
-        (_INTRADAY.index.hour < 11)  |              # hour < 11 → definitely inside window
-        (_INTRADAY.index.hour == 11) & (_INTRADAY.index.minute == 0)  # exactly 11:00
-    )
-    # Simpler re-expression of the same bounds using .time comparison:
-    # (index.time >= time(8,0)) & (index.time <= time(11,0))
-    # We use .time on the index which is already Eastern-tz-aware.
     from datetime import time as dtime               # local import avoids shadowing built-in
     chart_bars = _INTRADAY[
-        (_INTRADAY.index.time >= dtime(8, 0)) &
-        (_INTRADAY.index.time <= dtime(11, 0))
+        (_INTRADAY.index.time >= dtime(9, 0)) &
+        (_INTRADAY.index.time <= dtime(12, 0))
     ]
 
     if chart_bars.empty:
@@ -451,11 +441,11 @@ def get_day_data(date_str: str) -> dict:
     if day_bars.empty:
         return {"error": f"No intraday data for {date_str}."}
 
-    # Further restrict to the chart window [08:00, 11:00] for the chart arrays.
-    # We keep the full day_bars for pm_stats (which needs 8:45, 8:59, 9:29 bars).
+    # Further restrict to the chart window [09:00, 12:00] for the chart arrays.
+    # We keep the full day_bars for pm_stats (which still needs earlier premarket bars).
     chart_bars = day_bars[
-        (day_bars.index.time >= dtime(8,  0)) &
-        (day_bars.index.time <= dtime(11, 0))
+        (day_bars.index.time >= dtime(9,  0)) &
+        (day_bars.index.time <= dtime(12, 0))
     ]
 
     # Build parallel lists for Chart.js: x-axis labels + OHLC/volume arrays.
@@ -493,7 +483,7 @@ def get_day_data(date_str: str) -> dict:
     return {
         "date":        date_str,
         "chart": {
-            "labels":  chart_labels,    # ["08:00", "08:01", …, "11:00"]
+            "labels":  chart_labels,    # ["09:00", "09:01", …, "12:00"]
             "open":    chart_open,
             "high":    chart_high,
             "low":     chart_low,
