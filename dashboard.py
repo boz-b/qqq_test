@@ -60,7 +60,7 @@ EASTERN = "America/New_York"
 
 # Session boundary times (Eastern, 24-hour).  These match CLAUDE.md conventions.
 PREMARKET_START = "08:00"   # earliest bar shown in the chart
-CHART_END       = "11:00"   # latest bar shown (captures W1 + W2 + a 30-min tail)
+CHART_END       = "12:00"   # latest bar shown (captures W1 + W2 + a longer morning tail)
 MARKET_OPEN     = "09:30"   # vertical annotation — W1 start / official open
 W2_START        = "10:00"   # vertical annotation — W2 start
 

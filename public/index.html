@@ -276,7 +276,7 @@
     <!-- Dashboard title -->
     <div id="sidebar-header">
       <h1>QQQ Intraday</h1>
-      <p>8:00 – 11:00 AM ET &nbsp;·&nbsp; 1-min candles</p>
+      <p>9:00 – 12:00 PM ET &nbsp;·&nbsp; 1-min candles</p>
     </div>
 
     <!-- ── Date picker ─────────────────────────────────────────────────── -->
@@ -512,7 +512,7 @@
     titleEl.textContent = 'QQQ \u2014 ' + data.date;   // em-dash: "QQQ — 2026-02-10"
     const n = data.chart.labels.length;                 // number of 1-min bars
     subtitleEl.textContent =
-      n + ' bars \u00b7 8:00\u2013 11:00 AM ET';        // middle dot · and en-dash –
+      n + ' bars \u00b7 9:00\u2013 12:00 PM ET';        // middle dot · and en-dash –
   }
 
   // =========================================================================
@@ -659,12 +659,11 @@
     const pct = start.price ? ((current.price / start.price) - 1) * 100 : 0;
     const minutes = Math.round((current.x - start.x) / 60000);
     return [
-      ` From ${start.label} to ${current.label}`,
+      ` RANGE ${start.label} → ${current.label}`,
       ` Start close $${start.price.toFixed(2)}`,
       ` Current close $${current.price.toFixed(2)}`,
       ` Move ${formatSignedDollar(delta)}`,
-      ` Change ${formatSignedPct(pct)}`,
-      ` Minutes ${minutes >= 0 ? '+' : ''}${minutes}`,
+      `CHANGE ${formatSignedPct(pct)}`,
     ];
   }
 
@@ -758,22 +757,22 @@
     }));
 
     const premarketLine = allPoints
-      .filter(d => d.label < '09:30')
+      .filter(d => d.label >= '09:00' && d.label < '09:30')
       .map(d => ({ x: d.x, y: d.c }));
 
     const sessionCandles = allPoints
-      .filter(d => d.label >= '09:30')
+      .filter(d => d.label >= '09:30' && d.label <= '12:00')
       .map(d => ({ x: d.x, o: d.o, h: d.h, l: d.l, c: d.c }));
 
     const volumeBars = allPoints.map(d => ({ x: d.x, y: d.v }));
 
     measurePoints = allPoints
-      .filter(d => d.label >= '09:30' && Number.isFinite(d.c))
+      .filter(d => d.label >= '09:30' && d.label <= '12:00' && Number.isFinite(d.c))
       .map((d, i) => ({ index: i, x: d.x, label: d.label, price: d.c }));
     measurementState = null;
 
-    const sessionStart = luxon.DateTime.fromISO(`${data.date}T08:00`, { zone: 'America/New_York' }).toMillis();
-    const sessionEnd   = luxon.DateTime.fromISO(`${data.date}T11:00`, { zone: 'America/New_York' }).toMillis();
+    const sessionStart = luxon.DateTime.fromISO(`${data.date}T09:00`, { zone: 'America/New_York' }).toMillis();
+    const sessionEnd   = luxon.DateTime.fromISO(`${data.date}T12:00`, { zone: 'America/New_York' }).toMillis();
 
     const finiteLows = allPoints.map(d => d.l).filter(v => Number.isFinite(v));
     const finiteHighs = allPoints.map(d => d.h).filter(v => Number.isFinite(v));
@@ -826,6 +825,45 @@
         borderWidth:     0,
       },
     };
+
+    if (measurementState && measurementState.start && measurementState.current) {
+      const startX = Math.min(measurementState.start.x, measurementState.current.x);
+      const endX = Math.max(measurementState.start.x, measurementState.current.x);
+
+      annotations.measureStart = {
+        type: 'line',
+        scaleID: 'x',
+        value: measurementState.start.x,
+        borderColor: C.yellow,
+        borderWidth: 2,
+        borderDash: [6, 3],
+      };
+
+      annotations.measureEnd = {
+        type: 'line',
+        scaleID: 'x',
+        value: measurementState.current.x,
+        borderColor: C.yellow,
+        borderWidth: 2,
+        borderDash: [6, 3],
+      };
+
+      annotations.dimLeft = {
+        type: 'box',
+        xMin: sessionStart,
+        xMax: startX,
+        backgroundColor: 'rgba(13, 17, 23, 0.28)',
+        borderWidth: 0,
+      };
+
+      annotations.dimRight = {
+        type: 'box',
+        xMin: endX,
+        xMax: sessionEnd,
+        backgroundColor: 'rgba(13, 17, 23, 0.28)',
+        borderWidth: 0,
+      };
+    }
 
     // Horizontal dashed line at the prior-session closing price.
     // Only added when a valid prior close exists (null on the very first date).
@@ -989,7 +1027,7 @@
               font:        { family: 'ui-monospace, monospace', size: 10 },
               callback: function(value) {
                 const lbl = luxon.DateTime.fromMillis(Number(value)).toFormat('HH:mm');
-                return ['08:00', '08:30', '09:00', '09:30', '10:00', '10:30', '11:00'].includes(lbl)
+                return ['09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00'].includes(lbl)
                   ? lbl
                   : '';
               },
