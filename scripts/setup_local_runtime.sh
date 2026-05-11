@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Use the Bash shell because this setup script relies on Bash-safe options and path handling.
+
+set -euo pipefail
+# Stop immediately on errors, missing variables, or failed commands inside pipelines so setup cannot silently half-finish.
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Find the absolute path of the project root by going one folder up from this script's folder.
+
+cd "$REPO_DIR"
+# Change into the project root so every relative path below points at the correct project files.
+
+mkdir -p data
+# Create the local data-cache folder if it does not already exist.
+
+mkdir -p logs
+# Create the local log folder used by cron jobs and manual refresh runs.
+
+mkdir -p env
+# Create the ignored local environment folder where real API-key files can live safely.
+
+if [ ! -f env/finnhub.env ]; then
+# Check whether the local Finnhub env file is missing before creating a safe placeholder.
+    cp env.example/finnhub.env.example env/finnhub.env
+# Copy the committed safe template into the ignored local env folder for Boz to edit later.
+fi
+# Finish the conditional block that creates the local Finnhub env file only when needed.
+
+if [ ! -d venv ]; then
+# Check whether the project-local Python virtual environment is missing.
+    python3 -m venv venv
+# Create a project-local virtual environment so Python packages are installed inside this repo, not globally.
+fi
+# Finish the conditional block that creates the virtual environment only when needed.
+
+venv/bin/python -m pip install --upgrade pip
+# Upgrade pip inside the project-local virtual environment, not in the system Python installation.
+
+venv/bin/python -m pip install -r requirements.txt
+# Install the project's declared Python dependencies into the project-local virtual environment.
+
+venv/bin/python -m py_compile *.py scripts/*.py
+# Compile-check the project Python files using the virtual environment to catch syntax errors early.
+
+printf 'Local runtime setup complete. Activate with: source venv/bin/activate\n'
+# Print the command Boz or a future assistant can use to activate this project's virtual environment.

@@ -17,3 +17,13 @@ This project keeps real API keys outside git.
 ## Python rule
 
 Use only the project-local `venv/` for dependencies. Do not install Python libraries globally on this computer.
+
+## Local runtime setup
+
+Run this from the project root after cloning or restoring the repo:
+
+```bash
+scripts/setup_local_runtime.sh
+```
+
+The script creates `data/`, `logs/`, `env/`, `venv/`, installs `requirements.txt` into `venv/`, and syntax-checks the Python files.
