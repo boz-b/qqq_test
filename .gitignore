@@ -1,5 +1,32 @@
+# Ignore Python bytecode folders created when Python runs files.
 __pycache__/
+
+# Ignore compiled Python cache files if they appear outside __pycache__.
+*.py[cod]
+
+# Ignore project-local Python virtual environments so dependencies stay local.
 venv/
+.venv/
+
+# Ignore runtime logs created by cron jobs or manual refresh runs.
 logs/
+*.log
+
+# Ignore local CSV data caches because they can be regenerated and may be large.
 data/*.csv
+
+# Ignore local environment files so API keys never get committed.
 .env
+.env.*
+
+# Allow a safe template file if we ever add one at the repo root.
+!.env.example
+
+# Ignore the real local env directory where Boz stores API-key files.
+env/
+
+# Ignore any local secrets directory if we need separate private files later.
+secrets/
+
+# Ignore common macOS metadata if the repo is edited from another machine.
+.DS_Store

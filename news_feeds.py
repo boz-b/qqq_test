@@ -10,25 +10,32 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
+BASE_DIR = Path(__file__).resolve().parent  # Find the folder that contains this Python file, which is the project root.
+DATA_DIR = BASE_DIR / "data"  # Build the path to the local data-cache folder used by the refresh scripts.
+DATA_DIR.mkdir(exist_ok=True)  # Create the data folder if it is missing, and do nothing if it already exists.
+ENV_DIR = BASE_DIR / "env"  # Build the path to the ignored local env folder where real API-key files should live.
 
-COMBINED_EVENTS_CSV = DATA_DIR / "ff_events.csv"
-NEWS_CSV = DATA_DIR / "news_events.csv"
-REQUEST_CACHE_CSV = DATA_DIR / "news_request_cache.csv"
-WEEKLY_CALENDAR_CSV = DATA_DIR / "ff_calendar_thisweek.csv"
-FINNHUB_ENV_FILES = [BASE_DIR / ".env", BASE_DIR / ".env.finnhub"]
-FINNHUB_WEEKLY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.csv"
-NEWS_SYMBOLS = ["QQQ", "SPY", "NVDA", "GOOGL", "META"]
-MAX_MACRO_PER_DAY = 5
-MAX_NEWS_PER_DAY = 2
+COMBINED_EVENTS_CSV = DATA_DIR / "ff_events.csv"  # Store the merged calendar/news events in the CSV file read by the dashboard/export flow.
+NEWS_CSV = DATA_DIR / "news_events.csv"  # Store intermediate news-event data here when the news pipeline writes a separate cache.
+REQUEST_CACHE_CSV = DATA_DIR / "news_request_cache.csv"  # Store cached web/API responses here to reduce repeated network calls.
+WEEKLY_CALENDAR_CSV = DATA_DIR / "ff_calendar_thisweek.csv"  # Store the downloaded weekly macro calendar CSV here.
+FINNHUB_ENV_FILES = [  # List local-only env files that may contain the Finnhub API key.
+    ENV_DIR / "finnhub.env",  # Prefer this ignored file for the real Finnhub API key.
+    ENV_DIR / "local.env",  # Allow an optional ignored shared local env file for future local-only settings.
+    BASE_DIR / ".env",  # Keep the conventional ignored .env fallback for developers who already use it.
+    BASE_DIR / ".env.local",  # Keep a second ignored fallback used by many local-development workflows.
+]  # End the ordered list of allowed local env files; tracked files are intentionally not included.
+FINNHUB_WEEKLY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.csv"  # Public weekly calendar CSV URL used for macro events.
+NEWS_SYMBOLS = ["QQQ", "SPY", "NVDA", "GOOGL", "META"]  # Symbols whose news can be relevant for the QQQ/Nasdaq daily brief.
+MAX_MACRO_PER_DAY = 5  # Limit deterministic macro/calendar rows per day before combining with news items.
+MAX_NEWS_PER_DAY = 2  # Limit heuristic Finnhub news rows per day until the optional LLM summarizer is added.
 
 
 def _load_env() -> None:
-    for env_path in FINNHUB_ENV_FILES:
-        if env_path.exists():
-            load_dotenv(env_path, override=False)
+    """Load API keys from ignored local env files without printing or overwriting them."""  # Explain the safe env-loading behavior.
+    for env_path in FINNHUB_ENV_FILES:  # Check each allowed local env file in priority order.
+        if env_path.exists():  # Only load files that actually exist on this machine.
+            load_dotenv(env_path, override=False)  # Add variables to the process while preserving any variables already set by the shell.
 
 
 def _load_request_cache() -> dict[str, list[dict[str, Any]]]:
@@ -120,10 +127,10 @@ def _score_news_item(item: dict[str, Any]) -> tuple[int, pd.Timestamp]:
 
 def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = MAX_NEWS_PER_DAY) -> pd.DataFrame:
     """Fetch top Finnhub historical news and normalize to event-like rows."""
-    _load_env()
-    api_key = os.getenv("FINNHUB_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("FINNHUB_API_KEY is missing. Put it in .env or .env.finnhub")
+    _load_env()  # Load local ignored env files before trying to read the Finnhub key.
+    api_key = os.getenv("FINNHUB_API_KEY", "").strip()  # Read the key from the process environment without printing it.
+    if not api_key:  # Stop early if no usable key was supplied by the shell or ignored env files.
+        raise RuntimeError("FINNHUB_API_KEY is missing. Put it in env/finnhub.env or .env")  # Tell the operator where to put the local-only key.
 
     start = pd.Timestamp(start_date).date()
     end = pd.Timestamp(end_date).date()
