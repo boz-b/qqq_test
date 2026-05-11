@@ -413,23 +413,79 @@ def build_combined_events(start_date: str, end_date: str) -> pd.DataFrame:
 
 def _merge_event_archive(out: pd.DataFrame, output_csv: Path | str) -> pd.DataFrame:
     output_csv = Path(output_csv)
-    archive = pd.DataFrame(columns=out.columns)
-    if NEWS_CSV.exists():
+    # ↑ Convert the output path into a Path object so path comparisons and file checks are reliable.
+
+    archive_frames = []
+    # ↑ Start an empty list of existing event archives that should be preserved during this refresh.
+
+    seen_archive_paths = set()
+    # ↑ Track archive file paths already handled so the same file is not merged twice.
+
+    for archive_path in [output_csv, NEWS_CSV]:
+        # ↑ Check both the dashboard event CSV and the news archive CSV, because either may contain history after restoration.
+        archive_key = archive_path.resolve()
+        # ↑ Convert the archive path to an absolute canonical path for duplicate detection.
+
+        if archive_key in seen_archive_paths:
+            # ↑ This defensive check avoids accidental duplicate path handling if constants change later.
+            continue
+            # ↑ Skip this archive path if it has already been handled.
+
+        seen_archive_paths.add(archive_key)
+        # ↑ Remember that this archive path is now being handled.
+
+        if not archive_path.exists():
+            # ↑ If this archive file does not exist yet, there is nothing to read from it.
+            continue
+            # ↑ Move on to the next possible archive source.
+
         try:
-            archive = pd.read_csv(NEWS_CSV)
+            # ↑ Try reading the archive, but do not let one malformed local cache destroy the refresh.
+            archive_frames.append(pd.read_csv(archive_path))
+            # ↑ Add this existing archive table to the merge list so historical events are preserved.
         except Exception:
-            archive = pd.DataFrame(columns=out.columns)
+            # ↑ If this archive cannot be read, ignore it and keep merging other usable sources.
+            continue
+            # ↑ Move on without crashing the whole event refresh.
+
+    if archive_frames:
+        # ↑ If we found one or more usable existing archives, combine them before adding new rows.
+        archive = pd.concat(archive_frames, ignore_index=True)
+        # ↑ Merge all archive sources into one table with continuous row numbering.
+    else:
+        # ↑ If no archive exists yet, create an empty table with the same columns as the new rows.
+        archive = pd.DataFrame(columns=out.columns)
+        # ↑ This keeps the later concat simple even on a first-ever run.
 
     merged = pd.concat([archive, out], ignore_index=True)
+    # ↑ Combine preserved historical rows with the newly fetched rows for this run.
+
     merged["DateTime"] = pd.to_datetime(merged["DateTime"], utc=True, errors="coerce")
+    # ↑ Parse timestamps through UTC so mixed timezone offsets from different feeds do not break pandas.
+
     merged = merged.dropna(subset=["DateTime", "Event"])
+    # ↑ Remove rows missing a usable timestamp or event title.
+
     merged = merged.drop_duplicates(subset=["DateTime", "Event"], keep="last")
+    # ↑ Deduplicate repeated refresh results while keeping the newest copy of each event.
+
     merged = merged.sort_values("DateTime").reset_index(drop=True)
+    # ↑ Sort the final archive chronologically and reset row numbers after sorting.
+
     merged_out = merged.copy()
+    # ↑ Copy the normalized table before formatting timestamps for CSV output.
+
     merged_out["DateTime"] = merged_out["DateTime"].dt.strftime("%Y-%m-%d %H:%M:%S%z")
+    # ↑ Save timestamps with explicit offsets so dashboard.py can parse them safely later.
+
     merged_out.to_csv(NEWS_CSV, index=False)
+    # ↑ Write the merged event archive for future news/calendar refreshes.
+
     merged_out.to_csv(output_csv, index=False)
+    # ↑ Write the same merged events to the dashboard CSV consumed by export_json.py and dashboard.py.
+
     return merged_out
+    # ↑ Return the merged rows so callers and tests can see what was saved.
 
 
 def save_calendar_only_events(start_date: str, end_date: str, output_csv: Path | str = COMBINED_EVENTS_CSV) -> pd.DataFrame:

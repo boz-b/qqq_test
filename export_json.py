@@ -30,6 +30,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)                   # all relative paths below are from BASE_DIR
 sys.path.insert(0, BASE_DIR)
 
+NO_GIT = "--no-git" in sys.argv
+# ↑ Let local validation write/check JSON files without committing or pushing them to GitHub.
+
 # ── Step 1: Refresh source data ───────────────────────────────────────────────
 # Call the same refresh command documented in CLAUDE.md.
 # This refreshes intraday + daily CSVs under data/. The combined news/macro
@@ -93,6 +96,13 @@ for date_str in dates:
 
 if errors:
     print(f"\nWARNING: {len(errors)} date(s) had errors: {errors}")
+
+if NO_GIT:
+    # ↑ If local validation requested no Git writes, stop after generating JSON files.
+    print("\n--no-git supplied — generated public/data files but skipped git commit/push.")
+    # ↑ Make it clear in logs that the export succeeded but deployment was intentionally skipped.
+    sys.exit(0)
+    # ↑ Exit successfully before the normal git staging/commit/push deployment step.
 
 # ── Step 4: git commit + push ─────────────────────────────────────────────────
 # Stage only the pre-computed data files — never the raw CSVs (they're in .gitignore).

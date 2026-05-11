@@ -39,6 +39,9 @@ venv/bin/python -m pip install --upgrade pip
 venv/bin/python -m pip install -r requirements.txt
 # Install the project's declared Python dependencies into the project-local virtual environment.
 
+venv/bin/python scripts/prepare_local_data_cache.py
+# Restore legacy root CSV caches into data/ when needed and normalize daily dates safely.
+
 venv/bin/python -m py_compile *.py scripts/*.py
 # Compile-check the project Python files using the virtual environment to catch syntax errors early.
 

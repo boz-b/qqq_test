@@ -76,6 +76,22 @@ def _resolve_csv_path(primary: str, legacy: str) -> str:
         return legacy
     return primary
 
+
+def _normalize_daily_dates(raw_values) -> pd.DatetimeIndex:
+    """Convert daily CSV labels into clean trading-date timestamps."""
+    # ↑ Daily CSVs may contain plain dates or old timezone-bearing values from before the local data was deleted.
+    parsed_utc = pd.to_datetime(pd.Index(raw_values), utc=True, errors="raise")
+    # ↑ Parse through UTC so pandas accepts mixed daylight-saving offsets such as -05:00 and -04:00 in one file.
+
+    normalized_dates = pd.DatetimeIndex(parsed_utc.date)
+    # ↑ Keep only the UTC calendar date, which maps old 19:00 Eastern daily labels back to the intended trading day.
+
+    normalized_dates.name = "date"
+    # ↑ Give the returned index the expected name used by the rest of the dashboard code.
+
+    return normalized_dates
+    # ↑ Return timezone-free daily labels so prior-close lookups do not depend on daylight-saving offsets.
+
 # ---------------------------------------------------------------------------
 # Step 1 — Data loading helpers
 # ---------------------------------------------------------------------------
@@ -130,9 +146,9 @@ def load_daily() -> pd.DataFrame:
     df = pd.read_csv(_resolve_csv_path(DAILY_CSV, LEGACY_DAILY_CSV))
 
     # Daily CSV should be interpreted as trading-day labels, not converted wall
-    # times. Parse to pandas datetime and keep the calendar date aligned with
-    # the original daily bar label from yfinance.
-    df["date"] = pd.to_datetime(df["date"])
+    # times. Parse through a helper that also handles older mixed-timezone CSVs.
+    df["date"] = _normalize_daily_dates(df["date"])
+    # ↑ Replace the raw CSV labels with clean timezone-free trading dates before indexing.
 
     df = df.set_index("date").sort_index()
 
