@@ -92,7 +92,7 @@ for date_str in dates:
     bar_count = len(payload["chart"]["labels"])
     print(f"  {date_str}.json  ({bar_count} bars, "
           f"{payload['prior_close'] or 'no'} prior close, "
-          f"{len(payload['ff_events'])} FF events)")
+          f"{len(payload['ff_events'])} brief items)")  # `ff_events` is still the legacy JSON key for brief rows.
 
 if errors:
     print(f"\nWARNING: {len(errors)} date(s) had errors: {errors}")

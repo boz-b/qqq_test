@@ -170,7 +170,7 @@
       font-style: italic;
     }
 
-    /* ── ForexFactory events table ──────────────────────────────────────── */
+    /* ── Daily brief events table ───────────────────────────────────────── */
     #events-section { flex: 1; }   /* take remaining sidebar height */
 
     .events-table {
@@ -342,19 +342,21 @@
       </div><!-- /.stat-card -->
     </div><!-- /.section -->
 
-    <!-- ── ForexFactory events ─────────────────────────────────────────── -->
+    <!-- ── Daily brief events ───────────────────────────────────────────── -->
     <div class="section" id="events-section">
-      <div class="section-label">USD Events <span style="color:var(--muted);font-size:10px">(ForexFactory)</span></div>
+      <!-- The label says Daily Brief because rows now mix Finnhub news and macro-calendar items. -->
+      <div class="section-label">Daily Brief <span style="color:var(--muted);font-size:10px">(news + macro calendar)</span></div>
       <!--
         #events-body is a <tbody> populated by JS with one <tr> per event.
-        If there are no events, a single "No USD events" row is inserted.
+        If there are no rows, a single "No news or macro items" row is inserted.
       -->
       <table class="events-table">
         <thead>
           <tr>
             <th style="width:36px">Time</th>
             <th>Event</th>
-            <th style="width:50px;text-align:right">Act / Fcst</th>
+            <!-- Details covers actual/forecast values for macro rows and stays blank for pure news rows. -->
+            <th style="width:50px;text-align:right">Details</th>
           </tr>
         </thead>
         <tbody id="events-body">
@@ -573,8 +575,8 @@
       setVal(reversalEl, 'No', 'neu');
     }
 
-    // ── Events table ──────────────────────────────────────────────────────────
-    renderEvents(data.ff_events);
+    // ── Daily brief table ─────────────────────────────────────────────────────
+    renderEvents(data.ff_events); // data.ff_events is the legacy JSON key for daily brief rows.
   }
 
   // ── Helper: set .textContent and colour class on a .stat-value element ─────
@@ -583,7 +585,7 @@
     el.className   = 'stat-value ' + colorClass;  // e.g. "stat-value pos"
   }
 
-  // ── Helper: map FF impact string → badge CSS class ──────────────────────────
+  // ── Helper: map event impact string → badge CSS class ───────────────────────
   function badgeClass(impact) {
     const lower = (impact || '').toLowerCase();
     if (lower.includes('high'))   return 'badge-high';    // red dot
@@ -592,7 +594,7 @@
   }
 
   // ── Helper: HTML-escape user-visible strings (prevents XSS) ─────────────────
-  // Event names from an external source (ForexFactory) could theoretically
+  // Event names from external news/calendar sources could theoretically
   // contain < > & " characters that would break the HTML or allow injection.
   function esc(str) {
     if (!str) return '';
@@ -606,8 +608,9 @@
   // ── renderEvents(events) — build event table rows ───────────────────────────
   function renderEvents(events) {
     if (!events || events.length === 0) {
+      // Match the Daily Brief label when the merged news/calendar feed has no rows.
       evBodyEl.innerHTML =
-        '<tr><td colspan="3" class="placeholder">No USD events this day</td></tr>';
+        '<tr><td colspan="3" class="placeholder">No news or macro items this day</td></tr>';
       return;
     }
 

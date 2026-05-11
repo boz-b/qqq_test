@@ -876,7 +876,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       font-style: italic;
     }
 
-    /* ── ForexFactory events table ──────────────────────────────────────── */
+    /* ── Daily brief events table ───────────────────────────────────────── */
     #events-section { flex: 1; }   /* take remaining sidebar height */
 
     .events-table {
@@ -1048,18 +1048,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
       </div><!-- /.stat-card -->
     </div><!-- /.section -->
 
-    <!-- ── ForexFactory events ─────────────────────────────────────────── -->
+    <!-- ── Daily brief events ───────────────────────────────────────────── -->
     <div class="section" id="events-section">
-      <div class="section-label">Daily Brief <span style="color:var(--muted);font-size:10px">(max 5 news + 2 macro)</span></div>
+      <!-- The label avoids hard-coded caps because weekly macro-calendar rows can vary by day. -->
+      <div class="section-label">Daily Brief <span style="color:var(--muted);font-size:10px">(news + macro calendar)</span></div>
       <!--
         #events-body is a <tbody> populated by JS with one <tr> per event.
-        If there are no events, a single "No USD events" row is inserted.
+        If there are no rows, a single "No news or macro items" row is inserted.
       -->
       <table class="events-table">
         <thead>
           <tr>
             <th style="width:36px">Time</th>
             <th>Event</th>
+            <!-- Details covers actual/forecast values for macro rows and stays blank for pure news rows. -->
             <th style="width:50px;text-align:right">Details</th>
           </tr>
         </thead>
@@ -1278,8 +1280,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
       setVal(reversalEl, 'No', 'neu');
     }
 
-    // ── Events table ──────────────────────────────────────────────────────────
-    renderEvents(data.ff_events);
+    // ── Daily brief table ─────────────────────────────────────────────────────
+    renderEvents(data.ff_events); // data.ff_events is the legacy JSON key for daily brief rows.
   }
 
   // ── Helper: set .textContent and colour class on a .stat-value element ─────
@@ -1288,7 +1290,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     el.className   = 'stat-value ' + colorClass;  // e.g. "stat-value pos"
   }
 
-  // ── Helper: map FF impact string → badge CSS class ──────────────────────────
+  // ── Helper: map event impact string → badge CSS class ───────────────────────
   function badgeClass(impact) {
     const lower = (impact || '').toLowerCase();
     if (lower.includes('high'))   return 'badge-high';    // red dot
@@ -1311,6 +1313,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   // ── renderEvents(events) — build event table rows ───────────────────────────
   function renderEvents(events) {
     if (!events || events.length === 0) {
+      // Match the Daily Brief label when the merged news/calendar feed has no rows.
       evBodyEl.innerHTML =
         '<tr><td colspan="3" class="placeholder">No news or macro items this day</td></tr>';
       return;
@@ -1595,7 +1598,7 @@ if __name__ == "__main__":
         print(f"Chart: {len(data['chart']['labels'])} pts  "
               f"({data['chart']['labels'][0]} → {data['chart']['labels'][-1]})")
         print(f"Volume points: {len(data['chart']['volume'])}")
-        print(f"FF events: {len(data['ff_events'])}")
+        print(f"Daily brief items: {len(data['ff_events'])}")  # Keep the legacy data key while printing the user-facing label.
         # Verify the handler class is importable and has the right methods
         assert hasattr(DashboardHandler, "do_GET")
         assert hasattr(DashboardHandler, "_serve_dates")
