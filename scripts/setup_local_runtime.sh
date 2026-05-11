@@ -26,6 +26,16 @@ if [ ! -f env/finnhub.env ]; then
 fi
 # Finish the conditional block that creates the local Finnhub env file only when needed.
 
+if [ ! -f env/llm_summary.env ]; then
+# Check whether the optional AI-summary env file is missing before creating a safe placeholder.
+    cp env.example/llm_summary.env.example env/llm_summary.env
+# Copy the committed safe AI-summary template into the ignored local env folder for Boz to edit later.
+fi
+# Finish the conditional block that creates the local AI-summary env file only when needed.
+
+chmod 600 env/*.env 2>/dev/null || true
+# Restrict local env files to the current user when possible, while allowing setup to continue on filesystems that do not support chmod.
+
 if [ ! -d venv ]; then
 # Check whether the project-local Python virtual environment is missing.
     python3 -m venv venv
