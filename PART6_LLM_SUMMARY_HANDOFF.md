@@ -23,9 +23,9 @@ Current qqq_test state:
 - Parts 1-5 are complete and pushed.
 - Latest part-5 commit: 9e8177a chore: update daily brief wording
 - Local runtime exists: venv/, data/, logs/, env/.
-- Cron is installed:
-  - Monday 01:00 Europe/Istanbul: scripts/weekly_calendar_refresh.sh
-  - Tuesday-Saturday 01:45 Europe/Istanbul: scripts/nightly_refresh.sh
+- Cron is installed with local computer time:
+  - Tuesday 02:00: scripts/tuesday_refresh.sh, which runs weekly calendar refresh first and then the Finnhub/news daily refresh/export
+  - Wednesday-Saturday 02:00: scripts/nightly_refresh.sh
 - Daily brief UI now says Daily Brief (news + macro calendar).
 - Legacy JSON key remains ff_events for compatibility with public/index.html and dashboard.py.
 

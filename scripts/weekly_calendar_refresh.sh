@@ -67,8 +67,20 @@ save_calendar_only_events("${START_DATE}", "${END_DATE}")
 PY
 # Finish the inline Python block that updates the calendar event cache.
 
+SKIP_EXPORT_JSON="${SKIP_EXPORT_JSON:-0}"
+# Allow the Tuesday combined job to update the weekly calendar cache without exporting twice.
+
+if [ "$SKIP_EXPORT_JSON" = "1" ]; then
+# Check whether a parent job asked this script to stop after refreshing calendar data.
+    echo "[$(date --iso-8601=seconds)] Weekly calendar refresh done; export skipped by SKIP_EXPORT_JSON=1"
+# Print a clear log line so Tuesday cron shows why this script did not deploy by itself.
+    exit 0
+# Stop successfully because the parent Tuesday script will run the Finnhub refresh and final export next.
+fi
+# Finish the optional skip block used only by coordinated Tuesday runs.
+
 EXPORT_JSON_FLAGS="${EXPORT_JSON_FLAGS:-}"
-# Allow tests to pass --no-git through the environment while cron uses the default commit/push behavior.
+# Allow tests to pass --no-git through the environment while standalone cron uses the default commit/push behavior.
 
 echo "[$(date --iso-8601=seconds)] Exporting static dashboard data"
 # Print an export start marker before generating public/data JSON files.
