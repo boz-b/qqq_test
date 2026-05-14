@@ -16,16 +16,18 @@ This project keeps real API keys outside git.
 2. Put the real Finnhub key in `env/finnhub.env` only.
 3. Do not commit files under `env/`.
 
-## Optional AI summary key setup
+## Gemini AI news summary setup
 
-Part 6 is intentionally on hold until Boz chooses and adds a cheap AI API key.
+The daily Finnhub news pipeline can optionally replace raw Finnhub headlines with concise Gemini-generated bullet summaries.
 
-1. Copy `env.example/llm_summary.env.example` to `env/llm_summary.env`.
-2. Put the real AI API key and model settings in `env/llm_summary.env` only.
-3. Leave `LLM_SUMMARY_ENABLED=0` until the summary code is implemented and tested.
-4. Do not commit files under `env/`.
+1. Copy `env.example/llm_summary.env.example` to `env/llm_summary.env` if the local file does not already exist.
+2. Put the real Google AI Studio / Gemini API key in `GEMINI_API_KEY=...` inside `env/llm_summary.env` only.
+3. Keep `LLM_SUMMARY_PROVIDER=gemini`.
+4. Keep `GEMINI_MODEL=gemini-flash-latest` for the cheap/fast Gemini Flash alias, or change it to another Gemini model such as `gemini-3-flash-preview`.
+5. Set `LLM_SUMMARY_ENABLED=1` when you want the Tuesday/nightly cron refresh to use Gemini summaries.
+6. Do not commit files under `env/`.
 
-The planned part-6 implementation should use an OpenAI-compatible HTTP API when possible so no provider SDK dependency is needed.
+The implementation calls Gemini's REST `generateContent` endpoint with `requests`, so no extra Python SDK dependency is required.
 
 ## Python rule
 
