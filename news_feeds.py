@@ -41,6 +41,8 @@ DEFAULT_LLM_SUMMARY_MAX_CANDIDATE_ITEMS = 80  # Let Gemini see Finnhub plus same
 DEFAULT_LLM_SUMMARY_MAX_BULLETS = 7  # Keep the website daily brief concise after summarization.
 DEFAULT_LLM_SUMMARY_TIMEOUT_SECONDS = 45  # Prevent cron jobs from hanging indefinitely on a model request.
 DEFAULT_LLM_SUMMARY_TEMPERATURE = 0.2  # Favor repeatable factual summaries over creative wording.
+DEFAULT_LLM_SUMMARY_MAX_OUTPUT_TOKENS = 2048  # Give Gemini enough room to close valid JSON after seeing many breaking-news candidates.
+DEFAULT_LLM_SUMMARY_THINKING_BUDGET = 0  # Disable Gemini thinking tokens by default so JSON output does not get truncated.
 DEFAULT_FINANCIALJUICE_MAX_ITEMS_PER_DAY = 100  # Let Gemini see the full recent breaking-news feed for the refreshed market day.
 DEFAULT_FINANCIALJUICE_FEED_TIMEOUT_SECONDS = 20  # Bound the public RSS request so cron does not hang on FinancialJuice.
 
@@ -179,6 +181,8 @@ def _llm_summary_config() -> dict[str, Any] | None:
         "max_candidate_items": _env_int("LLM_SUMMARY_MAX_CANDIDATE_ITEMS", DEFAULT_LLM_SUMMARY_MAX_CANDIDATE_ITEMS, 5, 100),  # Bound prompt size.
         "max_bullets": _env_int("LLM_SUMMARY_MAX_BULLETS", DEFAULT_LLM_SUMMARY_MAX_BULLETS, 1, 12),  # Bound website rows.
         "temperature": _env_float("LLM_SUMMARY_TEMPERATURE", DEFAULT_LLM_SUMMARY_TEMPERATURE, 0.0, 1.0),  # Keep summaries factual.
+        "max_output_tokens": _env_int("LLM_SUMMARY_MAX_OUTPUT_TOKENS", DEFAULT_LLM_SUMMARY_MAX_OUTPUT_TOKENS, 256, 4096),  # Avoid truncated malformed JSON.
+        "thinking_budget": _env_int("LLM_SUMMARY_THINKING_BUDGET", DEFAULT_LLM_SUMMARY_THINKING_BUDGET, 0, 4096),  # Reserve budget for visible JSON instead of hidden reasoning.
     }  # End Gemini summary config.
 
 
@@ -468,7 +472,21 @@ def _call_gemini_summary(config: dict[str, Any], prompt: str) -> str:
         "generationConfig": {  # Configure low-cost deterministic JSON output.
             "temperature": config["temperature"],  # Keep wording stable.
             "responseMimeType": "application/json",  # Ask Gemini for a JSON response body.
-            "maxOutputTokens": 768,  # Keep output small because the dashboard needs short bullets.
+            "responseSchema": {  # Ask Gemini to produce a bounded JSON array instead of free-form JSON text.
+                "type": "ARRAY",  # The top-level response should be the list consumed by _parse_json_array_from_text.
+                "items": {  # Each summary bullet is one object.
+                    "type": "OBJECT",  # Summary rows are JSON objects.
+                    "properties": {  # Define only the fields the dashboard sanitizer understands.
+                        "time": {"type": "STRING"},  # HH:MM Eastern display time.
+                        "event": {"type": "STRING"},  # Concise summary sentence.
+                        "impact": {"type": "STRING"},  # Usually "News Summary".
+                        "priority": {"type": "INTEGER"},  # 1-10 sorting hint.
+                    },  # End summary-row properties.
+                    "required": ["time", "event", "impact", "priority"],  # Reject incomplete objects at generation time when possible.
+                },  # End array item schema.
+            },  # End response schema.
+            "maxOutputTokens": config["max_output_tokens"],  # Give Gemini enough room to close valid JSON.
+            "thinkingConfig": {"thinkingBudget": config["thinking_budget"]},  # Prevent hidden thinking from consuming the JSON output budget.
         },  # End generation config.
     }  # End request body.
     response = requests.post(  # Make the HTTPS request.
