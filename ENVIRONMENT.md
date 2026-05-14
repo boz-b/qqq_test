@@ -18,16 +18,17 @@ This project keeps real API keys outside git.
 
 ## Gemini AI news summary setup
 
-The daily Finnhub news pipeline can optionally replace raw Finnhub headlines with concise Gemini-generated bullet summaries.
+The daily news pipeline can optionally replace raw Finnhub/FinancialJuice headlines with concise Gemini-generated bullet summaries.
 
 1. Copy `env.example/llm_summary.env.example` to `env/llm_summary.env` if the local file does not already exist.
 2. Put the real Google AI Studio / Gemini API key in `GEMINI_API_KEY=...` inside `env/llm_summary.env` only.
 3. Keep `LLM_SUMMARY_PROVIDER=gemini`.
 4. Keep `GEMINI_MODEL=gemini-flash-latest` for the cheap/fast Gemini Flash alias, or change it to another Gemini model such as `gemini-3-flash-preview`.
-5. Set `LLM_SUMMARY_ENABLED=1` when you want the Tuesday/nightly cron refresh to use Gemini summaries.
-6. Do not commit files under `env/`.
+5. Keep `FINANCIALJUICE_FEED_ENABLED=1` if you want Gemini to include same-day FinancialJuice breaking-news RSS items in addition to Finnhub candidates.
+6. Set `LLM_SUMMARY_ENABLED=1` when you want the Tuesday/nightly cron refresh to use Gemini summaries.
+7. Do not commit files under `env/`.
 
-The implementation calls Gemini's REST `generateContent` endpoint with `requests`, so no extra Python SDK dependency is required.
+The implementation calls Gemini's REST `generateContent` endpoint and the public FinancialJuice RSS feed with `requests`, so no extra Python SDK dependency is required.
 
 ## Python rule
 
