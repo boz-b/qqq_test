@@ -449,7 +449,7 @@
     // async/await: 'await' pauses execution until the fetch Promise resolves,
     // then continues with the resolved value.  Errors fall into the catch block.
     try {
-      const resp  = await fetch('/data/dates.json');    // GET /api/dates
+      const resp  = await fetch('/data/dates.json?v=' + Date.now(), { cache: 'no-store' });    // Always ask Vercel for the latest date list.
       const dates = await resp.json();            // JSON array of "YYYY-MM-DD" strings
 
       if (!Array.isArray(dates) || dates.length === 0) {
@@ -485,7 +485,7 @@
     subtitleEl.textContent = 'Loading ' + dateStr + '\u2026';  // "Loading 2026-02-10…"
 
     try {
-      const resp = await fetch('/data/' + dateStr + '.json');
+      const resp = await fetch('/data/' + dateStr + '.json?v=' + Date.now(), { cache: 'no-store' });
       const data = await resp.json();
 
       if (data.error) {

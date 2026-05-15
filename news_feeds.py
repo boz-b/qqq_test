@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import argparse
 import os
 import json
 import xml.etree.ElementTree as ET
-from datetime import datetime, time, timedelta, timezone
+from datetime import date as date_cls, datetime, time, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -43,6 +45,7 @@ DEFAULT_LLM_SUMMARY_TIMEOUT_SECONDS = 45  # Prevent cron jobs from hanging indef
 DEFAULT_LLM_SUMMARY_TEMPERATURE = 0.2  # Favor repeatable factual summaries over creative wording.
 DEFAULT_LLM_SUMMARY_MAX_OUTPUT_TOKENS = 2048  # Give Gemini enough room to close valid JSON after seeing many breaking-news candidates.
 DEFAULT_LLM_SUMMARY_THINKING_BUDGET = 0  # Disable Gemini thinking tokens by default so JSON output does not get truncated.
+DEFAULT_LLM_SUMMARY_START_DATE = "2026-05-14"  # Do not spend Gemini calls backfilling dates before Boz's requested start date.
 DEFAULT_FINANCIALJUICE_MAX_ITEMS_PER_DAY = 100  # Let Gemini see the full recent breaking-news feed for the refreshed market day.
 DEFAULT_FINANCIALJUICE_FEED_TIMEOUT_SECONDS = 20  # Bound the public RSS request so cron does not hang on FinancialJuice.
 
@@ -144,6 +147,31 @@ def _env_float(name: str, default: float, min_value: float, max_value: float) ->
     return min(max(value, min_value), max_value)  # Clamp the float into the allowed range.
 
 
+def _parse_iso_date(value: Any, name: str = "date") -> date_cls:
+    """Parse a YYYY-MM-DD value and raise a clear error if it is invalid."""
+    text = _clean_text(value)
+    try:
+        return date_cls.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be YYYY-MM-DD, got {text!r}") from exc
+
+
+def _env_date(name: str, default: str | None = None) -> date_cls | None:
+    """Read an optional YYYY-MM-DD environment variable."""
+    value = _clean_text(os.getenv(name, default or ""))
+    if not value:
+        return None
+    try:
+        return _parse_iso_date(value, name)
+    except ValueError:
+        return _parse_iso_date(default, name) if default else None
+
+
+def _eastern_today() -> date_cls:
+    """Return the current market date in New York time."""
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
 def _llm_summary_config() -> dict[str, Any] | None:
     """Return Gemini summary settings when enabled, otherwise return None for fallback mode."""  # Keeps the existing headline path intact unless explicitly enabled.
     _load_env()  # Load ignored env files before reading optional Gemini settings.
@@ -183,6 +211,7 @@ def _llm_summary_config() -> dict[str, Any] | None:
         "temperature": _env_float("LLM_SUMMARY_TEMPERATURE", DEFAULT_LLM_SUMMARY_TEMPERATURE, 0.0, 1.0),  # Keep summaries factual.
         "max_output_tokens": _env_int("LLM_SUMMARY_MAX_OUTPUT_TOKENS", DEFAULT_LLM_SUMMARY_MAX_OUTPUT_TOKENS, 256, 4096),  # Avoid truncated malformed JSON.
         "thinking_budget": _env_int("LLM_SUMMARY_THINKING_BUDGET", DEFAULT_LLM_SUMMARY_THINKING_BUDGET, 0, 4096),  # Reserve budget for visible JSON instead of hidden reasoning.
+        "summary_start_date": _env_date("LLM_SUMMARY_START_DATE", DEFAULT_LLM_SUMMARY_START_DATE),  # Never ask Gemini to summarize older dates.
     }  # End Gemini summary config.
 
 
@@ -510,7 +539,47 @@ def summarize_news_candidates_with_gemini(scored_items: list[tuple[int, pd.Times
     return _sanitize_summary_rows(raw_rows, trade_date, config["max_bullets"])  # Validate and convert to event rows.
 
 
-def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = MAX_NEWS_PER_DAY) -> pd.DataFrame:
+def _existing_news_summary_records_for_day(trade_date: date_cls) -> list[dict[str, Any]]:
+    """Return already-archived Gemini summary rows for a date, so transient API failures do not degrade them."""
+    records: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for archive_path in [COMBINED_EVENTS_CSV, NEWS_CSV]:
+        if not archive_path.exists():
+            continue
+        try:
+            archive = pd.read_csv(archive_path)
+        except Exception:
+            continue
+        if archive.empty or "DateTime" not in archive.columns or "Event" not in archive.columns:
+            continue
+        frame = archive.copy()
+        frame["DateTime"] = pd.to_datetime(frame["DateTime"], utc=True, errors="coerce")
+        day_mask = frame["DateTime"].dt.tz_convert("America/New_York").dt.date == trade_date
+        impact_mask = frame.get("Impact", pd.Series("", index=frame.index)).astype(str).str.strip().str.lower().eq("news summary")
+        frame = frame.loc[day_mask & impact_mask].dropna(subset=["DateTime", "Event"])
+        for _, row in frame.iterrows():
+            event = _clean_text(row.get("Event"))
+            if not event:
+                continue
+            key = (row["DateTime"].isoformat(), event)
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append({
+                "DateTime": row["DateTime"].isoformat(),
+                "Currency": _clean_text(row.get("Currency")) or "USD",
+                "Impact": "News Summary",
+                "Event": event,
+                "Actual": _clean_text(row.get("Actual")),
+                "Forecast": _clean_text(row.get("Forecast")),
+                "Previous": _clean_text(row.get("Previous")),
+                "Kind": "news_summary",
+                "Priority": 8,
+            })
+    return records
+
+
+def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = MAX_NEWS_PER_DAY, llm_summary_dates: set[date_cls] | None = None) -> pd.DataFrame:
     """Fetch Finnhub plus FinancialJuice news and optionally replace raw headlines with Gemini summary bullets."""  # Main news path used by nightly cron.
     _load_env()  # Load local ignored env files before trying to read the Finnhub key.
     api_key = os.getenv("FINNHUB_API_KEY", "").strip()  # Read the key from the process environment without printing it.
@@ -518,8 +587,11 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
         raise RuntimeError("FINNHUB_API_KEY is missing. Put it in env/finnhub.env or .env")  # Tell the operator where to put the local-only key.
 
     llm_config = _llm_summary_config()  # Read optional Gemini settings; None means keep the old direct-headline fallback.
+    allowed_summary_dates = set(llm_summary_dates) if llm_summary_dates is not None else None  # Restrict Gemini to explicit dates when supplied.
+    summary_start_date = llm_config.get("summary_start_date") if llm_config else None  # Do not backfill AI summaries before this date.
     start = pd.Timestamp(start_date).date()  # Normalize the inclusive start date.
     end = pd.Timestamp(end_date).date()  # Normalize the inclusive end date.
+    llm_request_count = 0  # Count Gemini calls made by this process; cron should keep this at one.
 
     cache = _load_request_cache()  # Load Finnhub response cache to reduce repeated API calls.
     records: list[dict[str, Any]] = []  # Accumulate normalized news or summary rows for all days.
@@ -590,13 +662,25 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
 
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)  # Highest relevance and newest items go first.
         summary_records: list[dict[str, Any]] = []  # Hold Gemini summary rows if the optional call succeeds.
-        if llm_config and scored:  # Only call Gemini when explicitly enabled and there is something to summarize.
+        existing_summary_records = _existing_news_summary_records_for_day(day) if llm_config and scored else []  # Preserve good summaries on reruns.
+        summary_date_allowed = allowed_summary_dates is None or day in allowed_summary_dates  # Cron passes exactly one allowed date.
+        summary_start_allowed = summary_start_date is None or day >= summary_start_date  # Avoid old-date AI backfills.
+        if llm_config and scored and summary_date_allowed and summary_start_allowed:  # Only call Gemini for the explicitly allowed same-day batch.
             try:  # Model/API failures should not break the nightly refresh.
+                llm_request_count += 1  # Track the actual number of Gemini requests made.
+                limited_count = min(len(scored), llm_config["max_candidate_items"])  # Log the single batched prompt size without secrets.
+                print(f"[news_feeds] Gemini summary request {llm_request_count} for {day}: {limited_count} candidates")
                 summary_records = summarize_news_candidates_with_gemini(scored, day, llm_config)  # Replace raw headlines with concise bullets.
-            except Exception as exc:  # Fall back to direct headlines if Gemini errors, times out, or returns malformed JSON.
-                print(f"[news_feeds] Gemini summary failed for {day}: {exc}; falling back to Finnhub headlines")  # Log no secrets, only the date/error.
+            except Exception as exc:  # Fall back if Gemini errors, times out, or returns malformed JSON.
+                if existing_summary_records:  # If a previous good summary exists, keep it rather than degrading to raw rows.
+                    summary_records = existing_summary_records
+                    print(f"[news_feeds] Gemini summary failed for {day}: {exc}; keeping existing summary rows")
+                else:  # First run for that date still needs something visible on the website.
+                    print(f"[news_feeds] Gemini summary failed for {day}: {exc}; falling back to Finnhub headlines")  # Log no secrets, only the date/error.
+        elif existing_summary_records and summary_start_allowed:  # Do not discard already-good summaries when refreshing a wider range.
+            summary_records = existing_summary_records
 
-        if summary_records:  # Successful Gemini output replaces direct Finnhub headline rows for this day.
+        if summary_records:  # Successful or preserved Gemini output replaces direct Finnhub headline rows for this day.
             records.extend(summary_records)  # Add AI summary bullets to the normalized output.
         else:  # Disabled/missing/failed Gemini path keeps the old behavior.
             for score, dt, item in scored[:max_items_per_day]:  # Keep only the top heuristic headlines.
@@ -799,8 +883,8 @@ def build_calendar_only_events(start_date: str, end_date: str, auto_download: bo
     return _filter_date_range(weekly_calendar_df, start_date, end_date)
 
 
-def build_combined_events(start_date: str, end_date: str) -> pd.DataFrame:
-    news_df = fetch_finnhub_news(start_date, end_date, max_items_per_day=MAX_NEWS_PER_DAY)
+def build_combined_events(start_date: str, end_date: str, llm_summary_dates: set[date_cls] | None = None) -> pd.DataFrame:
+    news_df = fetch_finnhub_news(start_date, end_date, max_items_per_day=MAX_NEWS_PER_DAY, llm_summary_dates=llm_summary_dates)
     macro_df = build_calendar_only_events(start_date, end_date, auto_download=False)
 
     combined = pd.concat([news_df, macro_df], ignore_index=True)
@@ -925,8 +1009,8 @@ def save_calendar_only_events(start_date: str, end_date: str, output_csv: Path |
     return _merge_event_archive(out, output_csv)
 
 
-def save_combined_events(start_date: str, end_date: str, output_csv: Path | str = COMBINED_EVENTS_CSV) -> pd.DataFrame:
-    df = build_combined_events(start_date, end_date)
+def save_combined_events(start_date: str, end_date: str, output_csv: Path | str = COMBINED_EVENTS_CSV, llm_summary_dates: set[date_cls] | None = None) -> pd.DataFrame:
+    df = build_combined_events(start_date, end_date, llm_summary_dates=llm_summary_dates)
     if df.empty:
         raise RuntimeError("Combined news/macro feed is empty")
     out = df[["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous"]].copy()
@@ -934,8 +1018,37 @@ def save_combined_events(start_date: str, end_date: str, output_csv: Path | str 
     return _merge_event_archive(out, output_csv, replace_dates=replace_dates)
 
 
+def _parse_cli_args() -> argparse.Namespace:
+    """Parse the news-refresh CLI used by cron and manual repair runs."""
+    default_date = _eastern_today().isoformat()
+    parser = argparse.ArgumentParser(description="Refresh qqq_test news/macro events.")
+    parser.add_argument("--start", default=default_date, help="Inclusive market date to refresh, YYYY-MM-DD. Default: current New York date.")
+    parser.add_argument("--end", default=None, help="Inclusive market date to refresh, YYYY-MM-DD. Default: --start.")
+    parser.add_argument("--summary-date", default=None, help="The single market date allowed to call Gemini. Default: --end.")
+    parser.add_argument("--summarize-all-dates", action="store_true", help="Explicit backfill mode: allow one Gemini request per refreshed date.")
+    parser.add_argument("--csv", default=str(COMBINED_EVENTS_CSV), help="Output event CSV path. Default: data/ff_events.csv.")
+    args = parser.parse_args()
+    args.start_date = _parse_iso_date(args.start, "--start")
+    args.end_date = _parse_iso_date(args.end or args.start, "--end")
+    if args.start_date > args.end_date:
+        parser.error("--start must be on or before --end")
+    if args.summarize_all_dates:
+        args.llm_summary_dates = None
+    else:
+        summary_date = _parse_iso_date(args.summary_date, "--summary-date") if args.summary_date else args.end_date
+        if not (args.start_date <= summary_date <= args.end_date):
+            parser.error("--summary-date must fall inside the --start/--end range")
+        args.llm_summary_dates = {summary_date}
+    return args
+
+
 if __name__ == "__main__":
-    end = pd.Timestamp.now(tz="America/New_York").date()
-    start = end - timedelta(days=14)
-    df = save_combined_events(start.isoformat(), end.isoformat())
-    print(f"saved {len(df)} rows -> {COMBINED_EVENTS_CSV}")
+    cli_args = _parse_cli_args()
+    df = save_combined_events(
+        cli_args.start_date.isoformat(),
+        cli_args.end_date.isoformat(),
+        output_csv=cli_args.csv,
+        llm_summary_dates=cli_args.llm_summary_dates,
+    )
+    summary_scope = "all refreshed dates" if cli_args.llm_summary_dates is None else ", ".join(sorted(d.isoformat() for d in cli_args.llm_summary_dates))
+    print(f"saved {len(df)} rows -> {cli_args.csv} (Gemini allowed only for: {summary_scope})")

@@ -34,29 +34,22 @@ source venv/bin/activate
 python scripts/prepare_local_data_cache.py
 # Recreate/normalize local data caches before refreshing or exporting dashboard JSON.
 
-read -r START_DATE END_DATE <<EOF
-$(python - <<'PY'
-from datetime import date, timedelta
-# Import date helpers used to calculate the refresh window.
+TARGET_DATE="${NEWS_TARGET_DATE:-$(python - <<'PY'
+from datetime import datetime
+from zoneinfo import ZoneInfo
+# Use the US market date, not the Raspberry Pi's local Istanbul date.
 
-start = date.today() - timedelta(days=35)
-# Start far enough back to preserve recent market/calendar overlap.
-
-end = date.today() + timedelta(days=14)
-# Extend forward so upcoming macro calendar rows are cached too.
-
-print(start.isoformat(), end.isoformat())
-# Print both dates on one line so Bash can assign START_DATE and END_DATE.
+print(datetime.now(ZoneInfo("America/New_York")).date().isoformat())
+# Cron runs after the US close, so this is the one market day that needs new news summarization.
 PY
-)
-EOF
-# Capture the Python-computed date range into two Bash variables.
+)}"
+# Allow manual repair runs to override NEWS_TARGET_DATE while cron uses the current New York market date.
 
-echo "[$(date --iso-8601=seconds)] Refreshing combined news + official macro feed: ${START_DATE} -> ${END_DATE}"
-# Print the exact date window being refreshed.
+echo "[$(date --iso-8601=seconds)] Refreshing combined news + official macro feed for market day: ${TARGET_DATE}"
+# Print the exact single date being refreshed; this should produce at most one Gemini request.
 
-python news_feeds.py
-# Refresh Finnhub/news plus macro/calendar events into the local event CSV cache.
+python news_feeds.py --start "${TARGET_DATE}" --end "${TARGET_DATE}" --summary-date "${TARGET_DATE}"
+# Gather all Finnhub + FinancialJuice items for TARGET_DATE, then make one Gemini summary request for that day.
 
 EXPORT_JSON_FLAGS="${EXPORT_JSON_FLAGS:-}"
 # Allow tests to pass --no-git through the environment while cron uses the default commit/push behavior.
