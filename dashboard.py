@@ -418,6 +418,65 @@ def _events_for_day(trade_date) -> list[dict]:
     return events
 
 
+def _repair_chart_ohlc_anomalies(chart_bars: pd.DataFrame) -> pd.DataFrame:
+    """
+    Repair isolated Yahoo 1-minute OHLC wick anomalies before JSON export.
+
+    Yahoo occasionally emits a bad high/low wick while open/close remain normal.
+    Those bad wicks should not be allowed to distort chart scales or candles.
+    """
+    if chart_bars.empty:
+        return chart_bars
+
+    required_cols = {"open", "high", "low", "close"}
+    if not required_cols.issubset(chart_bars.columns):
+        return chart_bars
+
+    repaired = chart_bars.copy()
+    open_px = pd.to_numeric(repaired["open"], errors="coerce")
+    high_px = pd.to_numeric(repaired["high"], errors="coerce")
+    low_px = pd.to_numeric(repaired["low"], errors="coerce")
+    close_px = pd.to_numeric(repaired["close"], errors="coerce")
+
+    body_min = pd.concat([open_px, close_px], axis=1).min(axis=1)
+    body_max = pd.concat([open_px, close_px], axis=1).max(axis=1)
+    mid_px = ((open_px + close_px) / 2.0).abs()
+
+    if "volume" in repaired.columns:
+        volume = pd.to_numeric(repaired["volume"], errors="coerce").fillna(0)
+    else:
+        volume = pd.Series(1, index=repaired.index)
+
+    regular_threshold = pd.Series(
+        np.maximum(5.00, mid_px.to_numpy() * 0.012),
+        index=repaired.index,
+    )
+    zero_volume_threshold = pd.Series(
+        np.maximum(3.00, mid_px.to_numpy() * 0.008),
+        index=repaired.index,
+    )
+    wick_threshold = regular_threshold.where(volume > 0, zero_volume_threshold)
+
+    low_anomaly = (
+        np.isfinite(low_px) &
+        np.isfinite(body_min) &
+        ((body_min - low_px) > wick_threshold)
+    )
+    high_anomaly = (
+        np.isfinite(high_px) &
+        np.isfinite(body_max) &
+        ((high_px - body_max) > wick_threshold)
+    )
+
+    repaired.loc[low_anomaly, "low"] = body_min[low_anomaly]
+    repaired.loc[high_anomaly, "high"] = body_max[high_anomaly]
+
+    repaired["high"] = pd.concat([repaired["high"], body_max], axis=1).max(axis=1)
+    repaired["low"] = pd.concat([repaired["low"], body_min], axis=1).min(axis=1)
+
+    return repaired
+
+
 def get_day_data(date_str: str) -> dict:
     """
     Return all data needed to render one day's dashboard panel as a JSON-safe dict.
@@ -463,6 +522,7 @@ def get_day_data(date_str: str) -> dict:
         (day_bars.index.time >= dtime(9,  0)) &
         (day_bars.index.time <= dtime(12, 0))
     ]
+    chart_bars = _repair_chart_ohlc_anomalies(chart_bars)
 
     # Build parallel lists for Chart.js: x-axis labels + OHLC/volume arrays.
     chart_labels = [ts.strftime("%H:%M") for ts in chart_bars.index]
@@ -1363,7 +1423,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     }
 
     const labels = data.chart.labels;   // ["08:00", "08:01", … "11:00"]
-    const prices = data.chart.prices;   // [596.02, 596.10, …]  (null = missing bar)
+    const prices = data.chart.close;    // [596.02, 596.10, …]  (null = missing bar)
     const pc     = data.prior_close;    // float | null
 
     // ── Annotations: vertical session lines + horizontal prior-close line ────

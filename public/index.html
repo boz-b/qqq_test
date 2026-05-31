@@ -833,12 +833,23 @@
     const sessionStart = luxon.DateTime.fromISO(`${data.date}T09:00`, { zone: 'America/New_York' }).toMillis();
     const sessionEnd   = luxon.DateTime.fromISO(`${data.date}T12:00`, { zone: 'America/New_York' }).toMillis();
 
-    const finiteLows = allPoints.map(d => d.l).filter(v => Number.isFinite(v));
-    const finiteHighs = allPoints.map(d => d.h).filter(v => Number.isFinite(v));
-    const minLow = finiteLows.length ? Math.min(...finiteLows) : null;
-    const maxHigh = finiteHighs.length ? Math.max(...finiteHighs) : null;
-    const pricePad = (minLow !== null && maxHigh !== null)
-      ? Math.max(0.5, (maxHigh - minLow) * 0.08)
+    const visiblePrices = [];
+    const addPrice = value => {
+      const n = Number(value);
+      if (Number.isFinite(n)) visiblePrices.push(n);
+    };
+    premarketLine.forEach(d => addPrice(d.y));
+    sessionCandles.forEach(d => {
+      addPrice(d.o);
+      addPrice(d.h);
+      addPrice(d.l);
+      addPrice(d.c);
+    });
+    addPrice(pc);
+    const minPrice = visiblePrices.length ? Math.min(...visiblePrices) : null;
+    const maxPrice = visiblePrices.length ? Math.max(...visiblePrices) : null;
+    const pricePad = (minPrice !== null && maxPrice !== null)
+      ? Math.max(0.5, (maxPrice - minPrice) * 0.08)
       : 1;
 
     // ── Annotations: vertical session lines + horizontal prior-close line ────
@@ -1058,8 +1069,8 @@
           // Y-axis: price scale, displayed on the right side (Bloomberg style)
           y: {
             position: 'right',
-            min: minLow !== null ? (minLow - pricePad) : undefined,
-            max: maxHigh !== null ? (maxHigh + pricePad) : undefined,
+            min: minPrice !== null ? (minPrice - pricePad) : undefined,
+            max: maxPrice !== null ? (maxPrice + pricePad) : undefined,
             ticks: {
               color:    C.muted,
               font:     { family: 'ui-monospace, monospace', size: 10 },
