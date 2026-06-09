@@ -42,6 +42,8 @@ The database layer is scaffolded but not active for the website yet. `QQQ_DATA_B
 2. Edit `DATABASE_URL=...` in `env/database.env` for the local PostgreSQL database.
 3. Validate migration files without connecting: `venv/bin/python scripts/db_migrate.py --dry-run`.
 4. Apply migrations when PostgreSQL is ready: `venv/bin/python scripts/db_migrate.py`.
+5. Preview the idempotent CSV/static JSON backfill: `venv/bin/python scripts/db_backfill.py`.
+6. Load current local data when PostgreSQL is ready: `venv/bin/python scripts/db_backfill.py --migrate-first --apply`.
 
 The schema is plain PostgreSQL and TimescaleDB-ready. `price_bars` uses `bar_seconds` for 1m, daily, and future shorter bars. Durable news tables store AI summary rows only, not raw provider news candidates.
 

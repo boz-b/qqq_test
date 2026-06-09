@@ -55,6 +55,7 @@ ForexFactory ──┘
 - `export_json.py` writes static JSON files to `public/data/`
 - only `public/data/` is intended for static-site deployment
 - `db/` contains a PostgreSQL scaffold only; the live website still defaults to the CSV/export path
+- `scripts/db_backfill.py` previews or loads current CSV/static JSON data into PostgreSQL; it is idempotent and requires `--apply` before writing
 
 ### Important behavior notes
 
@@ -65,6 +66,7 @@ ForexFactory ──┘
 - `export_json.py` does **not** scrape ForexFactory by itself; it reuses the latest `data/ff_events.csv`
 - `dashboard.py` prefers `data/*.csv` and keeps a repo-root CSV fallback for older checkouts
 - `scripts/db_migrate.py --dry-run` validates database migrations without requiring PostgreSQL
+- `scripts/db_backfill.py` dry-runs the current CSV/static JSON import without connecting to PostgreSQL
 - durable news storage should use AI `News Summary` rows only, not raw provider headlines
 
 ## Data files
