@@ -69,6 +69,39 @@ print(f"Found {len(dates)} trading dates  ({dates[0]} … {dates[-1]})")
 OUT_DIR = os.path.join(BASE_DIR, "public", "data")
 os.makedirs(OUT_DIR, exist_ok=True)
 
+
+def _is_day_payload_filename(filename: str) -> bool:
+    """Return True for static day payload names such as 2026-06-08.json."""
+    if not filename.endswith(".json") or filename == "dates.json":
+        return False
+    try:
+        datetime.strptime(filename[:-5], "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
+def _prune_stale_day_payloads(out_dir: str, active_dates: list[str]) -> list[str]:
+    """Delete old day JSON files that are no longer listed in dates.json."""
+    active_filenames = {f"{date_str}.json" for date_str in active_dates}
+    pruned: list[str] = []
+    for filename in sorted(os.listdir(out_dir)):
+        if not _is_day_payload_filename(filename):
+            continue
+        if filename in active_filenames:
+            continue
+        path = os.path.join(out_dir, filename)
+        os.remove(path)
+        pruned.append(filename)
+    return pruned
+
+
+pruned_payloads = _prune_stale_day_payloads(OUT_DIR, dates)
+if pruned_payloads:
+    print(f"  Pruned {len(pruned_payloads)} stale day JSON file(s) from public/data/")
+else:
+    print("  No stale day JSON files to prune from public/data/")
+
 # dates.json — simple array; the JS loadDates() function fetches this first
 dates_path = os.path.join(OUT_DIR, "dates.json")
 with open(dates_path, "w") as fh:

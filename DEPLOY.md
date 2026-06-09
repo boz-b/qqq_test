@@ -128,7 +128,8 @@ What this does:
 2. reuses the latest `data/ff_events.csv`
 3. writes `public/data/dates.json`
 4. writes `public/data/YYYY-MM-DD.json`
-5. commits + pushes `public/data/` changes if needed
+5. removes stale `public/data/YYYY-MM-DD.json` files no longer listed in `dates.json`
+6. commits + pushes `public/data/` additions, changes, and deletions if needed
 
 ---
 

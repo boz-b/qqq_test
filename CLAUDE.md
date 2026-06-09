@@ -84,5 +84,7 @@ Local cache / runtime files should stay out of git:
 - `venv/`
 - `logs/`
 - `data/*.csv`
+- repo-root legacy CSV caches (`qqq_1m.csv`, `qqq_daily.csv`, `ff_events.csv`)
 
 Keep `public/data/` tracked because Vercel deploys from the committed static JSON.
+`export_json.py` prunes old `public/data/YYYY-MM-DD.json` files so GitHub only carries dates listed in `public/data/dates.json`.

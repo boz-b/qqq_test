@@ -26,7 +26,8 @@ DATA_DIR = BASE_DIR / "data"
 # Build the canonical local data-cache folder path used by the dashboard and export scripts.
 
 LEGACY_FILES = {
-    # Map old repo-root cache filenames to their canonical data/ cache filenames.
+    # Map old local repo-root cache filenames to their canonical data/ cache filenames.
+    # These files are no longer tracked in GitHub; this only helps machines that still have local ignored copies.
     "qqq_1m.csv": DATA_DIR / "qqq_1m.csv",
     # Map the old intraday price CSV to the canonical intraday cache path.
     "qqq_daily.csv": DATA_DIR / "qqq_daily.csv",
