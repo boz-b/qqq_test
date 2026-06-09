@@ -823,7 +823,9 @@
       .filter(d => d.label >= '09:30' && d.label <= '12:00')
       .map(d => ({ x: d.x, o: d.o, h: d.h, l: d.l, c: d.c }));
 
-    const volumeBars = allPoints.map(d => ({ x: d.x, y: d.v }));
+    const volumeBars = allPoints
+      .filter(d => d.label !== '09:30')
+      .map(d => ({ x: d.x, y: d.v }));
 
     measurePoints = allPoints
       .filter(d => d.label >= '09:30' && d.label <= '12:00' && Number.isFinite(d.c))
@@ -833,10 +835,10 @@
     const sessionStart = luxon.DateTime.fromISO(`${data.date}T09:00`, { zone: 'America/New_York' }).toMillis();
     const sessionEnd   = luxon.DateTime.fromISO(`${data.date}T12:00`, { zone: 'America/New_York' }).toMillis();
 
-    const visiblePrices = [];
+    const intradayPrices = [];
     const addPrice = value => {
       const n = Number(value);
-      if (Number.isFinite(n)) visiblePrices.push(n);
+      if (Number.isFinite(n)) intradayPrices.push(n);
     };
     premarketLine.forEach(d => addPrice(d.y));
     sessionCandles.forEach(d => {
@@ -845,11 +847,23 @@
       addPrice(d.l);
       addPrice(d.c);
     });
-    addPrice(pc);
+
+    const priorClose = Number(pc);
+    let includePriorCloseInScale = false;
+    if (Number.isFinite(priorClose) && intradayPrices.length) {
+      const intradayMin = Math.min(...intradayPrices);
+      const intradayMax = Math.max(...intradayPrices);
+      const intradayRange = Math.max(0.01, intradayMax - intradayMin);
+      const expandedRange = Math.max(intradayMax, priorClose) - Math.min(intradayMin, priorClose);
+      includePriorCloseInScale = expandedRange <= intradayRange * 1.25;
+    }
+
+    const visiblePrices = intradayPrices.slice();
+    if (includePriorCloseInScale) visiblePrices.push(priorClose);
     const minPrice = visiblePrices.length ? Math.min(...visiblePrices) : null;
     const maxPrice = visiblePrices.length ? Math.max(...visiblePrices) : null;
     const pricePad = (minPrice !== null && maxPrice !== null)
-      ? Math.max(0.5, (maxPrice - minPrice) * 0.08)
+      ? Math.max(0.25, (maxPrice - minPrice) * 0.05)
       : 1;
 
     // ── Annotations: vertical session lines + horizontal prior-close line ────
@@ -898,17 +912,18 @@
 
     // Horizontal dashed line at the prior-session closing price.
     // Only added when a valid prior close exists (null on the very first date).
-    if (pc !== null && pc !== undefined) {
+    if (includePriorCloseInScale) {
       annotations.priorCloseLine = {
         type:        'line',
         scaleID:     'y',          // targets the price (y) axis
-        value:       pc,           // price level for the horizontal line
+        value:       priorClose,   // price level for the horizontal line
+        adjustScaleRange: false,
         borderColor: C.blue,
         borderWidth: 1,
         borderDash:  [6, 3],       // longer dash than session lines
         label: {
           display:         true,
-          content:         'Prev $' + pc.toFixed(2),
+          content:         'Prev $' + priorClose.toFixed(2),
           color:           C.blue,
           font:            { size: 10, family: 'ui-monospace, monospace' },
           position:        'end',  // right side of the canvas
