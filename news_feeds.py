@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import json
 import xml.etree.ElementTree as ET
@@ -36,7 +37,8 @@ FINANCIALJUICE_FEED_URL_DEFAULT = "https://www.financialjuice.com/feed.ashx?xy=p
 FINANCIALJUICE_USER_AGENT = "qqq_test news refresh (+https://github.com/boz-b/qqq_test)"  # Identify this low-volume RSS fetch politely.
 NEWS_SYMBOLS = ["QQQ", "SPY", "NVDA", "GOOGL", "META"]  # Symbols whose news can be relevant for the QQQ/Nasdaq daily brief.
 MAX_MACRO_PER_DAY = 5  # Limit deterministic macro/calendar rows per day before combining with news items.
-MAX_NEWS_PER_DAY = 2  # Keep the old direct-headline fallback compact when Gemini summaries are disabled/unavailable.
+MAX_NEWS_PER_DAY = 2  # Legacy cap retained for manual experiments; persisted dashboard news should be summarized, not raw headlines.
+DEFAULT_REQUEST_CACHE_TTL_DAYS = 7  # Keep raw provider responses only briefly in the ignored local cache.
 GEMINI_API_BASE_DEFAULT = "https://generativelanguage.googleapis.com/v1beta"  # Gemini Developer API REST base URL used by the no-SDK integration.
 GEMINI_MODEL_DEFAULT = "gemini-flash-latest"  # Cheap/fast Gemini model alias from Google's REST quickstart, overridable in env.
 DEFAULT_LLM_SUMMARY_MAX_CANDIDATE_ITEMS = 80  # Let Gemini see Finnhub plus same-day FinancialJuice items while keeping prompt size bounded.
@@ -57,38 +59,118 @@ def _load_env() -> None:
             load_dotenv(env_path, override=False)  # Add variables to the process while preserving any variables already set by the shell.
 
 
-def _load_request_cache() -> dict[str, list[dict[str, Any]]]:
+def _request_cache_ttl_days() -> int:
+    """Return how many days raw provider responses may remain in the local cache."""
+    _load_env()
+    try:
+        ttl_days = int(_clean_text(os.getenv("NEWS_REQUEST_CACHE_TTL_DAYS", DEFAULT_REQUEST_CACHE_TTL_DAYS)))
+    except (TypeError, ValueError):
+        ttl_days = DEFAULT_REQUEST_CACHE_TTL_DAYS
+    return max(1, min(ttl_days, 90))
+
+
+def _request_cache_now() -> pd.Timestamp:
+    """Return the current UTC timestamp for cache age checks."""
+    return pd.Timestamp(datetime.now(timezone.utc))
+
+
+def _parse_request_cache_payload(value: Any) -> list[dict[str, Any]]:
+    """Parse a cached payload written by either the old repr format or the new JSON format."""
+    text = _clean_text(value)
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            parsed = ast.literal_eval(text)
+        except (SyntaxError, ValueError):
+            return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _parse_cached_at(value: Any) -> pd.Timestamp | None:
+    """Parse a cache timestamp, returning None for old cache rows with no age metadata."""
+    text = _clean_text(value)
+    if not text:
+        return None
+    try:
+        return pd.Timestamp(text).tz_convert("UTC")
+    except (TypeError, ValueError):
+        try:
+            parsed = pd.to_datetime(text, utc=True, errors="raise")
+        except (TypeError, ValueError):
+            return None
+        return pd.Timestamp(parsed).tz_convert("UTC")
+
+
+def _fresh_request_cache_entries(cache: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Drop raw provider-response cache rows older than the configured TTL."""
+    ttl_days = _request_cache_ttl_days()
+    cutoff = _request_cache_now() - pd.Timedelta(days=ttl_days)
+    fresh: dict[str, dict[str, Any]] = {}
+    for key, entry in cache.items():
+        cached_at = _parse_cached_at(entry.get("cached_at"))
+        if cached_at is None or cached_at < cutoff:
+            continue
+        fresh[key] = {"payload": entry.get("payload", []), "cached_at": cached_at.isoformat()}
+    return fresh
+
+
+def _load_request_cache() -> dict[str, dict[str, Any]]:
     if not REQUEST_CACHE_CSV.exists():
         return {}
     try:
         df = pd.read_csv(REQUEST_CACHE_CSV)
     except Exception:
         return {}
-    cache: dict[str, list[dict[str, Any]]] = {}
+    cache: dict[str, dict[str, Any]] = {}
     for _, row in df.iterrows():
-        cache[str(row["key"])] = eval(row["payload"]) if isinstance(row["payload"], str) else []
-    return cache
+        key = _clean_text(row.get("key"))
+        if not key:
+            continue
+        payload = _parse_request_cache_payload(row.get("payload"))
+        cached_at = _parse_cached_at(row.get("cached_at"))
+        cache[key] = {
+            "payload": payload,
+            "cached_at": cached_at.isoformat() if cached_at is not None else "",
+        }
+    return _fresh_request_cache_entries(cache)
 
 
-def _save_request_cache(cache: dict[str, list[dict[str, Any]]]) -> None:
-    rows = [{"key": k, "payload": repr(v)} for k, v in cache.items()]
-    pd.DataFrame(rows).to_csv(REQUEST_CACHE_CSV, index=False)
+def _save_request_cache(cache: dict[str, dict[str, Any]]) -> None:
+    fresh_cache = _fresh_request_cache_entries(cache)
+    rows = [
+        {
+            "key": key,
+            "payload": json.dumps(entry.get("payload", []), ensure_ascii=False, separators=(",", ":")),
+            "cached_at": entry.get("cached_at") or _request_cache_now().isoformat(),
+        }
+        for key, entry in sorted(fresh_cache.items())
+    ]
+    pd.DataFrame(rows, columns=["key", "payload", "cached_at"]).to_csv(REQUEST_CACHE_CSV, index=False)
+    pruned = len(cache) - len(fresh_cache)
+    if pruned:
+        print(f"[news_feeds] Pruned {pruned} stale raw news request cache row(s)")
 
 
-def _get_json_with_cache(url: str, headers: dict[str, str], cache: dict[str, list[dict[str, Any]]], retries: int = 3) -> list[dict[str, Any]]:
+def _get_json_with_cache(url: str, headers: dict[str, str], cache: dict[str, dict[str, Any]], retries: int = 3) -> list[dict[str, Any]]:
     if url in cache:
-        return cache[url]
+        payload = cache[url].get("payload", [])
+        return payload if isinstance(payload, list) else []
     for _ in range(retries):
         try:
             resp = requests.get(url, headers=headers, timeout=30)
             resp.raise_for_status()
             payload = resp.json()
-            cache[url] = payload
+            payload = payload if isinstance(payload, list) else []
+            cache[url] = {"payload": payload, "cached_at": _request_cache_now().isoformat()}
             return payload
         except Exception:
             continue
     if url in cache:
-        return cache[url]
+        payload = cache[url].get("payload", [])
+        return payload if isinstance(payload, list) else []
     return []
 
 
@@ -173,10 +255,10 @@ def _eastern_today() -> date_cls:
 
 
 def _llm_summary_config() -> dict[str, Any] | None:
-    """Return Gemini summary settings when enabled, otherwise return None for fallback mode."""  # Keeps the existing headline path intact unless explicitly enabled.
+    """Return Gemini summary settings when enabled, otherwise return None."""  # Raw news rows are no longer persisted as a fallback.
     _load_env()  # Load ignored env files before reading optional Gemini settings.
     if not _env_flag("LLM_SUMMARY_ENABLED", False):  # Summaries must be explicitly enabled by Boz.
-        return None  # Disabled mode uses the old heuristic Finnhub headline rows.
+        return None  # Disabled mode skips news persistence instead of storing raw headlines.
 
     provider = _clean_text(os.getenv("LLM_SUMMARY_PROVIDER", "gemini")).lower()  # Read the summary provider name.
     legacy_base = _clean_text(os.getenv("LLM_SUMMARY_API_BASE", ""))  # Read the old template base URL for backward compatibility.
@@ -356,7 +438,7 @@ def _score_news_item(item: dict[str, Any]) -> tuple[int, pd.Timestamp]:
 
 
 def _news_event_record(score: int, dt: pd.Timestamp, item: dict[str, Any]) -> dict[str, Any]:
-    """Convert one raw Finnhub item into the old direct-headline event shape."""  # Used only when Gemini is disabled or fails.
+    """Convert one raw Finnhub item into the old direct-headline event shape for manual debugging only."""
     headline = _clean_text(item.get("headline"))  # Read the Finnhub headline without altering the source payload.
     source = _clean_text(item.get("source"))  # Read the source name for attribution.
     return {  # Return the normalized dashboard/archive row.
@@ -580,20 +662,20 @@ def _existing_news_summary_records_for_day(trade_date: date_cls) -> list[dict[st
 
 
 def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = MAX_NEWS_PER_DAY, llm_summary_dates: set[date_cls] | None = None) -> pd.DataFrame:
-    """Fetch Finnhub plus FinancialJuice news and optionally replace raw headlines with Gemini summary bullets."""  # Main news path used by nightly cron.
+    """Fetch Finnhub plus FinancialJuice news and persist only Gemini summary bullets."""  # Main news path used by nightly cron.
     _load_env()  # Load local ignored env files before trying to read the Finnhub key.
     api_key = os.getenv("FINNHUB_API_KEY", "").strip()  # Read the key from the process environment without printing it.
     if not api_key:  # Stop early if no usable key was supplied by the shell or ignored env files.
         raise RuntimeError("FINNHUB_API_KEY is missing. Put it in env/finnhub.env or .env")  # Tell the operator where to put the local-only key.
 
-    llm_config = _llm_summary_config()  # Read optional Gemini settings; None means keep the old direct-headline fallback.
+    llm_config = _llm_summary_config()  # Read optional Gemini settings; None means skip news rows until summaries are configured.
     allowed_summary_dates = set(llm_summary_dates) if llm_summary_dates is not None else None  # Restrict Gemini to explicit dates when supplied.
     summary_start_date = llm_config.get("summary_start_date") if llm_config else None  # Do not backfill AI summaries before this date.
     start = pd.Timestamp(start_date).date()  # Normalize the inclusive start date.
     end = pd.Timestamp(end_date).date()  # Normalize the inclusive end date.
     llm_request_count = 0  # Count Gemini calls made by this process; cron should keep this at one.
 
-    cache = _load_request_cache()  # Load Finnhub response cache to reduce repeated API calls.
+    cache = _load_request_cache()  # Load short-lived Finnhub response cache to reduce repeated API calls without accumulating raw data.
     records: list[dict[str, Any]] = []  # Accumulate normalized news or summary rows for all days.
     seen = set()  # Deduplicate headlines within the whole requested refresh window.
     financialjuice_items: list[dict[str, Any]] = []  # Hold recent public RSS rows fetched once for this refresh.
@@ -606,12 +688,12 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
     day = start  # Iterate one market date at a time so Gemini summaries are daily.
     headers = {"X-Finnhub-Token": api_key}  # Authenticate Finnhub requests through the documented header.
     while day <= end:  # Process each date in the refresh window.
-        scored: list[tuple[int, pd.Timestamp, dict[str, Any]]] = []  # Hold raw candidates before summarization/fallback capping.
+        scored: list[tuple[int, pd.Timestamp, dict[str, Any]]] = []  # Hold raw candidates only in memory before summarization.
         for symbol in NEWS_SYMBOLS:  # Fetch ETF/index proxy plus mega-cap tech news relevant to QQQ.
             url = f"https://finnhub.io/api/v1/company-news?symbol={symbol}&from={day.isoformat()}&to={day.isoformat()}"  # Company-news endpoint is historical/date-filtered.
             payload = _get_json_with_cache(url, headers, cache)  # Use cached response when available.
             for item in payload:  # Score every candidate Finnhub returned for this symbol/date.
-                headline = _clean_text(item.get("headline"))  # Headline is required for both prompt and fallback display.
+                headline = _clean_text(item.get("headline"))  # Headline is required for the summary prompt.
                 if not headline:  # Skip empty records.
                     continue  # Move to the next candidate.
                 unique_key = (day.isoformat(), headline)  # Use date+headline to dedupe across symbols.
@@ -619,7 +701,7 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
                     continue  # Move to the next candidate.
                 seen.add(unique_key)  # Mark this headline as handled.
                 score, dt = _score_news_item(item)  # Apply deterministic relevance scoring.
-                scored.append((score, dt, item))  # Keep the raw item for Gemini or fallback formatting.
+                scored.append((score, dt, item))  # Keep the raw item in memory for Gemini.
 
         general_payload = _get_json_with_cache("https://finnhub.io/api/v1/news?category=general&minId=0", headers, cache)  # Add broad market/general news.
         for item in general_payload:  # Filter general news down to the current Eastern date.
@@ -629,7 +711,7 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
             dt = pd.to_datetime(int(ts), unit="s", utc=True)  # Parse Finnhub timestamp as UTC.
             if _iso_to_eastern_date(dt) != day:  # Keep only news whose Eastern date matches this loop day.
                 continue  # Ignore general stories from other dates.
-            headline = _clean_text(item.get("headline"))  # Require a headline for prompt and fallback display.
+            headline = _clean_text(item.get("headline"))  # Require a headline for the summary prompt.
             if not headline:  # Skip blank records.
                 continue  # Move to the next candidate.
             unique_key = (day.isoformat(), headline)  # Deduplicate against symbol-specific candidates too.
@@ -637,7 +719,7 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
                 continue  # Move to the next candidate.
             seen.add(unique_key)  # Mark this general headline as handled.
             score, dt = _score_news_item(item)  # Score general news using the same keyword heuristic.
-            scored.append((score, dt, item))  # Keep the raw item for Gemini or fallback formatting.
+            scored.append((score, dt, item))  # Keep the raw item in memory for Gemini.
 
         financialjuice_count = 0  # Track per-day RSS rows so an unusually noisy feed cannot dominate the prompt.
         for item in financialjuice_items:  # Add recent FinancialJuice breaking-news rows to the same daily candidate pool.
@@ -647,7 +729,7 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
             dt = pd.to_datetime(int(ts), unit="s", utc=True)  # Parse the RSS timestamp as UTC.
             if _iso_to_eastern_date(dt) != day:  # Include only items from this Eastern market date.
                 continue  # Ignore RSS items from other dates in the feed.
-            headline = _clean_text(item.get("headline"))  # Require text for Gemini/fallback.
+            headline = _clean_text(item.get("headline"))  # Require text for Gemini.
             if not headline:  # Skip blank rows.
                 continue  # Move to the next RSS item.
             unique_key = (day.isoformat(), headline)  # Deduplicate FinancialJuice against itself and Finnhub.
@@ -655,7 +737,7 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
                 continue  # Move to the next RSS item.
             seen.add(unique_key)  # Mark this headline as handled.
             score, dt = _score_news_item(item)  # Score FinancialJuice with the same relevance heuristic.
-            scored.append((score, dt, item))  # Keep the raw RSS-derived item for Gemini or fallback display.
+            scored.append((score, dt, item))  # Keep the raw RSS-derived item in memory for Gemini.
             financialjuice_count += 1  # Count accepted RSS rows for this day.
             if financialjuice_count >= financialjuice_config["max_items_per_day"]:  # Respect the configured RSS cap.
                 break  # Stop adding FinancialJuice rows for this date.
@@ -671,20 +753,19 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
                 limited_count = min(len(scored), llm_config["max_candidate_items"])  # Log the single batched prompt size without secrets.
                 print(f"[news_feeds] Gemini summary request {llm_request_count} for {day}: {limited_count} candidates")
                 summary_records = summarize_news_candidates_with_gemini(scored, day, llm_config)  # Replace raw headlines with concise bullets.
-            except Exception as exc:  # Fall back if Gemini errors, times out, or returns malformed JSON.
+            except Exception as exc:  # Preserve prior summaries if Gemini errors, times out, or returns malformed JSON.
                 if existing_summary_records:  # If a previous good summary exists, keep it rather than degrading to raw rows.
                     summary_records = existing_summary_records
                     print(f"[news_feeds] Gemini summary failed for {day}: {exc}; keeping existing summary rows")
-                else:  # First run for that date still needs something visible on the website.
-                    print(f"[news_feeds] Gemini summary failed for {day}: {exc}; falling back to Finnhub headlines")  # Log no secrets, only the date/error.
+                else:  # First run for that date should not persist raw headlines.
+                    print(f"[news_feeds] Gemini summary failed for {day}: {exc}; skipping raw news persistence")  # Log no secrets, only the date/error.
         elif existing_summary_records and summary_start_allowed:  # Do not discard already-good summaries when refreshing a wider range.
             summary_records = existing_summary_records
 
-        if summary_records:  # Successful or preserved Gemini output replaces direct Finnhub headline rows for this day.
+        if summary_records:  # Successful or preserved Gemini output is the only persisted news format.
             records.extend(summary_records)  # Add AI summary bullets to the normalized output.
-        else:  # Disabled/missing/failed Gemini path keeps the old behavior.
-            for score, dt, item in scored[:max_items_per_day]:  # Keep only the top heuristic headlines.
-                records.append(_news_event_record(score, dt, item))  # Convert one raw candidate to the old event row shape.
+        elif scored:  # Raw candidates are intentionally not saved to the event archive.
+            print(f"[news_feeds] No summary rows for {day}; skipped {min(len(scored), max_items_per_day)} raw headline fallback row(s)")
 
         day += timedelta(days=1)  # Advance to the next Eastern date.
 
@@ -695,7 +776,7 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
 
     df["DateTime"] = pd.to_datetime(df["DateTime"], utc=True)  # Normalize all timestamps through UTC for safe sorting/export.
     df = df.sort_values(["DateTime", "Priority"], ascending=[True, False]).reset_index(drop=True)  # Sort chronologically with priority tie-breaks.
-    return df  # Return either summary rows or fallback headline rows.
+    return df  # Return summary rows only.
 
 
 def _normalize_impact(raw: Any) -> str:
@@ -910,6 +991,20 @@ def build_combined_events(start_date: str, end_date: str, llm_summary_dates: set
     return combined.reset_index(drop=True)
 
 
+def _drop_raw_news_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove old direct-headline news rows so persisted event data stays summary-only."""
+    if df.empty:
+        return df
+    impact = df.get("Impact", pd.Series("", index=df.index)).astype(str).str.strip().str.lower()
+    kind = df.get("Kind", pd.Series("", index=df.index)).astype(str).str.strip().str.lower()
+    raw_news_mask = impact.eq("news") | kind.eq("news")
+    if not raw_news_mask.any():
+        return df
+    removed = int(raw_news_mask.sum())
+    print(f"[news_feeds] Dropped {removed} raw news headline row(s) from event archive")
+    return df.loc[~raw_news_mask].copy()
+
+
 def _merge_event_archive(out: pd.DataFrame, output_csv: Path | str, replace_dates: set[Any] | None = None) -> pd.DataFrame:
     output_csv = Path(output_csv)
     # ↑ Convert the output path into a Path object so path comparisons and file checks are reliable.
@@ -972,6 +1067,9 @@ def _merge_event_archive(out: pd.DataFrame, output_csv: Path | str, replace_date
 
     merged = pd.concat([archive, out], ignore_index=True)
     # ↑ Combine preserved historical rows with the newly fetched rows for this run.
+
+    merged = _drop_raw_news_rows(merged)
+    # ↑ Enforce Boz's rule that persisted news rows are summaries, not raw headlines.
 
     merged["DateTime"] = pd.to_datetime(merged["DateTime"], utc=True, errors="coerce")
     # ↑ Parse timestamps through UTC so mixed timezone offsets from different feeds do not break pandas.

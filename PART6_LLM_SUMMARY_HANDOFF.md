@@ -7,9 +7,11 @@ This file used to be the handoff note for implementing optional AI summaries. Th
 - `news_feeds.py` now loads `env/llm_summary.env` in addition to `env/finnhub.env`.
 - When `LLM_SUMMARY_ENABLED=1`, the nightly news refresh sends the day's scored Finnhub candidates plus same-day FinancialJuice RSS breaking-news items to Gemini and stores concise `News Summary` bullet rows.
 - Those summary bullets replace direct headline rows for refreshed dates in `data/ff_events.csv`, so the website shows summaries in the existing Daily Brief table.
-- If Gemini is disabled, missing a key, times out, returns bad JSON, or otherwise fails, the project falls back to top raw headline behavior.
+- If Gemini fails for a date that already has summaries, the project preserves those existing summary rows.
+- If there is no usable summary for a date, the project skips news persistence for that date instead of writing raw headline rows.
 - If the FinancialJuice RSS feed is slow or unavailable, cron continues with Finnhub only.
 - The integration uses Gemini REST and the public FinancialJuice RSS feed via `requests`; no new Python package is required.
+- Raw provider responses are only kept briefly in ignored local `data/news_request_cache.csv`; `NEWS_REQUEST_CACHE_TTL_DAYS` controls the retention window.
 
 ## Local setup
 
