@@ -8,6 +8,8 @@ This project keeps real API keys outside git.
 - `env/finnhub.env` is the real local Finnhub file and is ignored by git.
 - `env.example/llm_summary.env.example` is the safe optional AI-summary template committed to git.
 - `env/llm_summary.env` is the real local AI-summary file and is ignored by git.
+- `env.example/database.env.example` is the safe optional PostgreSQL template committed to git.
+- `env/database.env` is the real local database config file and is ignored by git.
 - `.env` and `.env.*` are also ignored for local-only overrides.
 
 ## Finnhub key setup
@@ -32,6 +34,17 @@ The implementation calls Gemini's REST `generateContent` endpoint and the public
 
 If Gemini fails for a date that already has summary rows, cron preserves those existing summaries. If there is no usable summary, cron skips news persistence for that date instead of writing raw headline fallback rows. Raw provider responses are only kept briefly in ignored local `data/news_request_cache.csv`; `NEWS_REQUEST_CACHE_TTL_DAYS` controls that cache's retention window.
 
+## PostgreSQL database scaffold
+
+The database layer is scaffolded but not active for the website yet. `QQQ_DATA_BACKEND=csv` remains the default until a later approved job adds and validates DB-backed export parity.
+
+1. Copy `env.example/database.env.example` to `env/database.env` if setup has not already created it.
+2. Edit `DATABASE_URL=...` in `env/database.env` for the local PostgreSQL database.
+3. Validate migration files without connecting: `venv/bin/python scripts/db_migrate.py --dry-run`.
+4. Apply migrations when PostgreSQL is ready: `venv/bin/python scripts/db_migrate.py`.
+
+The schema is plain PostgreSQL and TimescaleDB-ready. `price_bars` uses `bar_seconds` for 1m, daily, and future shorter bars. Durable news tables store AI summary rows only, not raw provider news candidates.
+
 ## Python rule
 
 Use only the project-local `venv/` for dependencies. Do not install Python libraries globally on this computer.
@@ -44,4 +57,4 @@ Run this from the project root after cloning or restoring the repo:
 scripts/setup_local_runtime.sh
 ```
 
-The script creates `data/`, `logs/`, `env/`, `env/finnhub.env`, `env/llm_summary.env`, and `venv/`, installs `requirements.txt` into `venv/`, and syntax-checks the Python files.
+The script creates `data/`, `logs/`, `env/`, `env/finnhub.env`, `env/llm_summary.env`, `env/database.env`, and `venv/`, installs `requirements.txt` into `venv/`, syntax-checks the Python files, and dry-run validates DB migrations.

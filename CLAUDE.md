@@ -54,6 +54,7 @@ ForexFactory ──┘
 - `dashboard.py` reads the CSV caches and computes per-day payloads
 - `export_json.py` writes static JSON files to `public/data/`
 - only `public/data/` is intended for static-site deployment
+- `db/` contains a PostgreSQL scaffold only; the live website still defaults to the CSV/export path
 
 ### Important behavior notes
 
@@ -63,6 +64,8 @@ ForexFactory ──┘
 - W2 = **10:00–10:30 ET**
 - `export_json.py` does **not** scrape ForexFactory by itself; it reuses the latest `data/ff_events.csv`
 - `dashboard.py` prefers `data/*.csv` and keeps a repo-root CSV fallback for older checkouts
+- `scripts/db_migrate.py --dry-run` validates database migrations without requiring PostgreSQL
+- durable news storage should use AI `News Summary` rows only, not raw provider headlines
 
 ## Data files
 
@@ -76,6 +79,12 @@ Generated static output:
 
 - `public/data/dates.json`
 - `public/data/YYYY-MM-DD.json`
+
+Database scaffold:
+
+- `db/migrations/001_initial_schema.sql`
+- `scripts/db_migrate.py`
+- `env.example/database.env.example`
 
 ## Git hygiene
 

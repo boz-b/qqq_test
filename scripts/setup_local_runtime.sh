@@ -33,6 +33,13 @@ if [ ! -f env/llm_summary.env ]; then
 fi
 # Finish the conditional block that creates the local AI-summary env file only when needed.
 
+if [ ! -f env/database.env ]; then
+# Check whether the optional database env file is missing before creating a safe placeholder.
+    cp env.example/database.env.example env/database.env
+# Copy the committed safe database template into the ignored local env folder for future DB work.
+fi
+# Finish the conditional block that creates the local database env file only when needed.
+
 chmod 600 env/*.env 2>/dev/null || true
 # Restrict local env files to the current user when possible, while allowing setup to continue on filesystems that do not support chmod.
 
@@ -54,6 +61,9 @@ venv/bin/python scripts/prepare_local_data_cache.py
 
 venv/bin/python -m py_compile *.py scripts/*.py
 # Compile-check the project Python files using the virtual environment to catch syntax errors early.
+
+venv/bin/python scripts/db_migrate.py --dry-run
+# Validate database migration files without requiring PostgreSQL to be running.
 
 printf 'Local runtime setup complete. Activate with: source venv/bin/activate\n'
 # Print the command Boz or a future assistant can use to activate this project's virtual environment.
