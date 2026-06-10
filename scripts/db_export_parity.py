@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Compare PostgreSQL-generated dashboard payloads with current static JSON."""
+"""Compare PostgreSQL-generated dashboard payloads with another export source."""
 
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from pathlib import Path
@@ -53,9 +54,31 @@ def _load_static_payload(date_label: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _normalize_payload(payload: dict, ignore_event_order: bool) -> dict:
+    if not ignore_event_order:
+        return payload
+    normalized = copy.deepcopy(payload)
+    normalized["ff_events"] = sorted(
+        normalized.get("ff_events", []),
+        key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")),
+    )
+    return normalized
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare PostgreSQL export payloads against public/data static JSON."
+        description="Compare PostgreSQL export payloads against static JSON or the CSV dashboard source."
+    )
+    parser.add_argument(
+        "--source",
+        choices=("static", "csv"),
+        default="static",
+        help="Reference source to compare against. Defaults to current public/data static JSON.",
+    )
+    parser.add_argument(
+        "--ignore-event-order",
+        action="store_true",
+        help="Compare daily brief rows as a set. Useful for cron when DB export preserves existing public JSON order.",
     )
     parser.add_argument(
         "--date",
@@ -71,31 +94,49 @@ def main() -> int:
 
     from postgres_export import get_available_dates, get_day_data
 
-    static_dates = _load_static_dates()
-    postgres_dates = get_available_dates()
-    dates_to_check = args.dates or static_dates
+    if args.source == "csv":
+        from dashboard import get_available_dates as get_csv_available_dates
+        from dashboard import get_day_data as get_csv_day_data
 
-    if not args.dates and static_dates != postgres_dates:
+        reference_dates = get_csv_available_dates()
+
+        def load_reference_payload(date_label: str) -> dict:
+            return get_csv_day_data(date_label)
+
+    else:
+        reference_dates = _load_static_dates()
+
+        def load_reference_payload(date_label: str) -> dict:
+            return _load_static_payload(date_label)
+
+    postgres_dates = get_available_dates()
+    dates_to_check = args.dates or reference_dates
+
+    if not args.dates and reference_dates != postgres_dates:
         print("[db_export_parity] dates mismatch")
-        print(f"[db_export_parity] static_count={len(static_dates)} postgres_count={len(postgres_dates)}")
-        print(f"[db_export_parity] missing_from_postgres={sorted(set(static_dates) - set(postgres_dates))}")
-        print(f"[db_export_parity] extra_in_postgres={sorted(set(postgres_dates) - set(static_dates))}")
+        print(f"[db_export_parity] source={args.source}")
+        print(f"[db_export_parity] reference_count={len(reference_dates)} postgres_count={len(postgres_dates)}")
+        print(f"[db_export_parity] missing_from_postgres={sorted(set(reference_dates) - set(postgres_dates))}")
+        print(f"[db_export_parity] extra_in_postgres={sorted(set(postgres_dates) - set(reference_dates))}")
         return 1
 
     checked = 0
     for date_label in dates_to_check:
-        if date_label not in static_dates:
-            print(f"[db_export_parity] {date_label}: missing static payload")
+        if date_label not in reference_dates:
+            print(f"[db_export_parity] {date_label}: missing {args.source} payload")
             return 1
-        expected = _load_static_payload(date_label)
-        actual = get_day_data(date_label)
+        expected = _normalize_payload(load_reference_payload(date_label), args.ignore_event_order)
+        actual = _normalize_payload(get_day_data(date_label), args.ignore_event_order)
         diff = _first_diff(expected, actual)
         if diff:
             print(f"[db_export_parity] {date_label}: mismatch")
+            print(f"[db_export_parity] source={args.source}")
             print(f"[db_export_parity] first_diff={diff}")
             return 1
         checked += 1
 
+    print(f"[db_export_parity] source={args.source}")
+    print(f"[db_export_parity] ignore_event_order={args.ignore_event_order}")
     print(f"[db_export_parity] dates_checked={checked}")
     print("[db_export_parity] status=success")
     return 0

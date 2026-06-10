@@ -35,6 +35,9 @@ python3 export_json.py
 # Compare DB-generated payloads against current static JSON
 python3 scripts/db_export_parity.py
 
+# Cron-safe export helper; CSV by default, Postgres only with QQQ_CRON_DATA_BACKEND=postgres
+EXPORT_JSON_FLAGS=--no-git bash scripts/cron_export_static.sh
+
 # Launch local dashboard
 python3 dashboard.py
 
@@ -62,6 +65,7 @@ PostgreSQL ───────> postgres_export.py --^  (only when QQQ_DATA_BA
 - `scripts/db_backfill.py` previews or loads current CSV/static JSON data into PostgreSQL; it is idempotent and requires `--apply` before writing
 - `postgres_export.py` mirrors the static JSON payload from PostgreSQL when `QQQ_DATA_BACKEND=postgres`
 - `scripts/db_export_parity.py` compares the DB payloads against current `public/data/*.json` before any cutover
+- `scripts/cron_export_static.sh` is the cron export gate: it uses CSV by default, and with `QQQ_CRON_DATA_BACKEND=postgres` it refreshes price CSVs, backfills PostgreSQL, checks DB-vs-CSV parity, then exports from PostgreSQL
 
 ### Important behavior notes
 
@@ -74,6 +78,7 @@ PostgreSQL ───────> postgres_export.py --^  (only when QQQ_DATA_BA
 - `scripts/db_migrate.py --dry-run` validates database migrations without requiring PostgreSQL
 - `scripts/db_backfill.py` dry-runs the current CSV/static JSON import without connecting to PostgreSQL
 - `QQQ_DATA_BACKEND=csv` is the default; use `QQQ_DATA_BACKEND=postgres venv/bin/python export_json.py --no-git` for DB-backed export validation
+- `QQQ_CRON_DATA_BACKEND=csv` is the cron default; set it to `postgres` in ignored `env/database.env` only when the local PostgreSQL service should drive cron exports
 - durable news storage should use AI `News Summary` rows only, not raw provider headlines
 
 ## Data files
@@ -95,6 +100,7 @@ Database scaffold:
 - `scripts/db_migrate.py`
 - `scripts/db_backfill.py`
 - `scripts/db_export_parity.py`
+- `scripts/cron_export_static.sh`
 - `postgres_export.py`
 - `env.example/database.env.example`
 

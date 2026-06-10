@@ -85,8 +85,8 @@ EXPORT_JSON_FLAGS="${EXPORT_JSON_FLAGS:-}"
 echo "[$(date --iso-8601=seconds)] Exporting static dashboard data"
 # Print an export start marker before generating public/data JSON files.
 
-python3 export_json.py ${EXPORT_JSON_FLAGS}
-# Generate static dashboard JSON and, unless --no-git was supplied, commit/push public/data changes.
+/usr/bin/env bash scripts/cron_export_static.sh
+# Generate static dashboard JSON from CSV by default, or from PostgreSQL only when QQQ_CRON_DATA_BACKEND=postgres.
 
 echo "[$(date --iso-8601=seconds)] Weekly calendar refresh done"
 # Print a timestamped success marker for the cron log.

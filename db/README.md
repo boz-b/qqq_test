@@ -56,6 +56,13 @@ The website still reads the existing CSV/export-generated JSON flow by default. 
    QQQ_DATA_BACKEND=postgres venv/bin/python export_json.py --no-git
    ```
 
+10. Test the cron export gate without committing:
+
+   ```bash
+   venv/bin/python scripts/db_export_parity.py --source csv --ignore-event-order
+   EXPORT_JSON_FLAGS=--no-git QQQ_CRON_DATA_BACKEND=postgres bash scripts/cron_export_static.sh
+   ```
+
 ## Schema Intent
 
 - `instruments`: symbols and provider identifiers.
@@ -92,6 +99,19 @@ When a row is also present in active static JSON, the importer stores its `publi
 `postgres_export.py` mirrors `dashboard.py`'s JSON shape from PostgreSQL. `export_json.py` selects it only when `QQQ_DATA_BACKEND=postgres`; otherwise the existing CSV/dashboard path is unchanged.
 
 Run `scripts/db_export_parity.py` before any cutover. It compares PostgreSQL-generated dates and per-day payloads against the current `public/data/*.json` files and exits non-zero on the first mismatch.
+
+For cron, use `scripts/db_export_parity.py --source csv --ignore-event-order` after DB backfill. This checks DB payloads against the freshly refreshed CSV/dashboard source while allowing event display order to remain compatible with existing public JSON for same-timestamp events.
+
+## Cron Backend Gate
+
+The installed Tuesday/nightly scripts call `scripts/cron_export_static.sh` for their final export. It keeps `csv` as the default backend. When `QQQ_CRON_DATA_BACKEND=postgres` is set in ignored `env/database.env` or the cron environment, the helper:
+
+1. Refreshes intraday and daily price CSVs with `DataLoader.fetch_all()`.
+2. Runs `scripts/db_backfill.py --migrate-first --apply`.
+3. Runs `scripts/db_export_parity.py --source csv --ignore-event-order`.
+4. Runs `QQQ_DATA_BACKEND=postgres python export_json.py`.
+
+If any DB step fails, the script exits before `export_json.py` can commit or push static JSON. Set `QQQ_CRON_DATA_BACKEND=csv` or remove the override to return to the CSV export path.
 
 ## Retention Rule
 

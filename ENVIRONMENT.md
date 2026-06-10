@@ -46,8 +46,11 @@ The database layer is available for opt-in static export validation. `QQQ_DATA_B
 6. Load current local data when PostgreSQL is ready: `venv/bin/python scripts/db_backfill.py --migrate-first --apply`.
 7. Verify DB export parity against current static JSON: `venv/bin/python scripts/db_export_parity.py`.
 8. Test a DB-backed export without Git writes: `QQQ_DATA_BACKEND=postgres venv/bin/python export_json.py --no-git`.
+9. Test the cron DB path without Git writes: `EXPORT_JSON_FLAGS=--no-git QQQ_CRON_DATA_BACKEND=postgres bash scripts/cron_export_static.sh`.
 
 The schema is plain PostgreSQL and TimescaleDB-ready. `price_bars` uses `bar_seconds` for 1m, daily, and future shorter bars. Durable news tables store AI summary rows only, not raw provider news candidates.
+
+`QQQ_CRON_DATA_BACKEND=csv` is the cron default and keeps the active scheduled refresh on the original CSV/export path. Set `QQQ_CRON_DATA_BACKEND=postgres` only when the local PostgreSQL service should drive cron exports; that path refreshes price CSVs, backfills the DB, checks DB-vs-CSV parity, then exports static JSON from PostgreSQL.
 
 ## Python rule
 
