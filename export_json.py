@@ -30,8 +30,16 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)                   # all relative paths below are from BASE_DIR
 sys.path.insert(0, BASE_DIR)
 
+from database import load_database_env  # noqa: E402
+
 NO_GIT = "--no-git" in sys.argv
 # ↑ Let local validation write/check JSON files without committing or pushing them to GitHub.
+
+load_database_env()
+DATA_BACKEND = (os.getenv("QQQ_DATA_BACKEND") or "csv").strip().lower()
+if DATA_BACKEND not in {"csv", "postgres"}:
+    print(f"ERROR: unsupported QQQ_DATA_BACKEND={DATA_BACKEND!r}. Use 'csv' or 'postgres'.")
+    sys.exit(1)
 
 # ── Step 1: Refresh source data ───────────────────────────────────────────────
 # Call the same refresh command documented in CLAUDE.md.
@@ -42,21 +50,29 @@ NO_GIT = "--no-git" in sys.argv
 print(f"\n{'='*60}")
 print(f"export_json.py  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"{'='*60}")
+print(f"Data backend: {DATA_BACKEND}")
 
-try:
-    from data_loader import DataLoader
-    print("Refreshing data via DataLoader.fetch_all() …")
-    DataLoader().fetch_all()
-    print("Intraday + daily refresh complete.")
-except ModuleNotFoundError:
-    print("data_loader not found — using existing CSV files.")
-except Exception as exc:
-    print(f"WARNING: data refresh failed ({exc}) — using existing CSV files.")
+if DATA_BACKEND == "csv":
+    try:
+        from data_loader import DataLoader
+        print("Refreshing data via DataLoader.fetch_all() …")
+        DataLoader().fetch_all()
+        print("Intraday + daily refresh complete.")
+    except ModuleNotFoundError:
+        print("data_loader not found — using existing CSV files.")
+    except Exception as exc:
+        print(f"WARNING: data refresh failed ({exc}) — using existing CSV files.")
+else:
+    print("PostgreSQL backend selected — skipping CSV price refresh.")
 
 # ── Step 2: Import dashboard functions ────────────────────────────────────────
-# dashboard.py loads the three CSVs at module level (into _INTRADAY, _DAILY,
-# _FF).  Importing it here picks up the freshly-refreshed CSVs from Step 1.
-from dashboard import get_available_dates, get_day_data   # noqa: E402
+# dashboard.py loads the three CSVs at module level for the default path.
+# postgres_export.py mirrors the same payload shape from PostgreSQL when
+# QQQ_DATA_BACKEND=postgres is explicitly selected.
+if DATA_BACKEND == "postgres":
+    from postgres_export import get_available_dates, get_day_data   # noqa: E402
+else:
+    from dashboard import get_available_dates, get_day_data   # noqa: E402
 
 dates = get_available_dates()
 if not dates:

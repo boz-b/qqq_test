@@ -144,6 +144,7 @@ def _event_record_from_values(
     forecast: Any = "",
     previous: Any = "",
     import_source: str = "csv",
+    extra_payload: dict[str, Any] | None = None,
 ) -> MarketEvent | None:
     impact_text = _clean_text(impact)
     title_text = _clean_text(title)
@@ -166,6 +167,8 @@ def _event_record_from_values(
         "forecast": _clean_text(forecast),
         "previous": _clean_text(previous),
     }
+    if extra_payload:
+        payload.update(extra_payload)
     source_id = _row_hash(
         {
             "event_time": event_time.isoformat(),
@@ -289,7 +292,7 @@ def load_static_json_events() -> tuple[list[MarketEvent], int, int]:
     for path in paths:
         payload = json.loads(path.read_text())
         trade_date = _clean_text(payload.get("date")) or path.stem
-        for row in payload.get("ff_events", []):
+        for row_index, row in enumerate(payload.get("ff_events", [])):
             if _clean_text(row.get("impact")).lower() == "news":
                 raw_news_rows += 1
                 continue
@@ -303,6 +306,10 @@ def load_static_json_events() -> tuple[list[MarketEvent], int, int]:
                 row.get("forecast"),
                 row.get("previous"),
                 import_source="public_json",
+                extra_payload={
+                    "public_json_date": trade_date,
+                    "public_json_order": row_index,
+                },
             )
             if event is not None:
                 events.append(event)
@@ -321,6 +328,9 @@ def collapse_events(events: list[MarketEvent]) -> tuple[list[MarketEvent], int]:
             sources = set(payload.get("import_sources", [payload.get("import_source", "unknown")]))
             sources.add(event.event_payload.get("import_source", "unknown"))
             payload["import_sources"] = sorted(sources)
+            for metadata_key in ("public_json_date", "public_json_order"):
+                if metadata_key in event.event_payload:
+                    payload[metadata_key] = event.event_payload[metadata_key]
             collapsed[key] = MarketEvent(
                 event_time=existing.event_time,
                 market_date=existing.market_date,

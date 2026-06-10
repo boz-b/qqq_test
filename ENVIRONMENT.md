@@ -34,9 +34,9 @@ The implementation calls Gemini's REST `generateContent` endpoint and the public
 
 If Gemini fails for a date that already has summary rows, cron preserves those existing summaries. If there is no usable summary, cron skips news persistence for that date instead of writing raw headline fallback rows. Raw provider responses are only kept briefly in ignored local `data/news_request_cache.csv`; `NEWS_REQUEST_CACHE_TTL_DAYS` controls that cache's retention window.
 
-## PostgreSQL database scaffold
+## PostgreSQL database backend
 
-The database layer is scaffolded but not active for the website yet. `QQQ_DATA_BACKEND=csv` remains the default until a later approved job adds and validates DB-backed export parity.
+The database layer is available for opt-in static export validation. `QQQ_DATA_BACKEND=csv` remains the default and keeps the current website path unchanged. Use `QQQ_DATA_BACKEND=postgres` only after PostgreSQL is migrated and backfilled.
 
 1. Copy `env.example/database.env.example` to `env/database.env` if setup has not already created it.
 2. Edit `DATABASE_URL=...` in `env/database.env` for the local PostgreSQL database.
@@ -44,6 +44,8 @@ The database layer is scaffolded but not active for the website yet. `QQQ_DATA_B
 4. Apply migrations when PostgreSQL is ready: `venv/bin/python scripts/db_migrate.py`.
 5. Preview the idempotent CSV/static JSON backfill: `venv/bin/python scripts/db_backfill.py`.
 6. Load current local data when PostgreSQL is ready: `venv/bin/python scripts/db_backfill.py --migrate-first --apply`.
+7. Verify DB export parity against current static JSON: `venv/bin/python scripts/db_export_parity.py`.
+8. Test a DB-backed export without Git writes: `QQQ_DATA_BACKEND=postgres venv/bin/python export_json.py --no-git`.
 
 The schema is plain PostgreSQL and TimescaleDB-ready. `price_bars` uses `bar_seconds` for 1m, daily, and future shorter bars. Durable news tables store AI summary rows only, not raw provider news candidates.
 

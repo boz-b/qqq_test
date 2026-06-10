@@ -1,8 +1,8 @@
 # qqq_test Database Scaffold
 
-This is the approved Job 3 scaffold for moving durable project data into PostgreSQL without changing the current website path yet.
+This is the approved PostgreSQL scaffold for moving durable project data into PostgreSQL without changing the current website path by default.
 
-The website still reads the existing CSV/export-generated JSON flow. `QQQ_DATA_BACKEND=csv` remains the default until a later approved job adds and validates DB-backed export parity.
+The website still reads the existing CSV/export-generated JSON flow by default. `QQQ_DATA_BACKEND=csv` remains the safe default; `QQQ_DATA_BACKEND=postgres` is available for opt-in static export validation after the database has been migrated and backfilled.
 
 ## Setup
 
@@ -44,6 +44,18 @@ The website still reads the existing CSV/export-generated JSON flow. `QQQ_DATA_B
    venv/bin/python scripts/db_backfill.py --migrate-first --apply
    ```
 
+8. Compare PostgreSQL-generated payloads with the current committed static JSON:
+
+   ```bash
+   venv/bin/python scripts/db_export_parity.py
+   ```
+
+9. Run an opt-in PostgreSQL static export locally without committing:
+
+   ```bash
+   QQQ_DATA_BACKEND=postgres venv/bin/python export_json.py --no-git
+   ```
+
 ## Schema Intent
 
 - `instruments`: symbols and provider identifiers.
@@ -72,6 +84,14 @@ Do not store raw news candidates in PostgreSQL. Raw provider responses are short
 `scripts/db_backfill.py` is idempotent. It upserts one QQQ instrument, 1m bars from `data/qqq_1m.csv`, daily bars from `data/qqq_daily.csv`, macro/news-summary events from `data/ff_events.csv`, and active static payload events from `public/data/dates.json`.
 
 The importer skips raw `Impact=News` rows and only persists `Impact=News Summary` rows into `market_events`/`news_summaries`. It collapses duplicate calendar events between the CSV cache and the active static JSON files so PostgreSQL gets one durable event row per `(event_time, kind, source, title)`.
+
+When a row is also present in active static JSON, the importer stores its `public_json_order` in `market_events.event_payload`. The PostgreSQL export path uses that display-order metadata to reproduce the current static webpage payload exactly for rows sharing the same timestamp.
+
+## Export Parity
+
+`postgres_export.py` mirrors `dashboard.py`'s JSON shape from PostgreSQL. `export_json.py` selects it only when `QQQ_DATA_BACKEND=postgres`; otherwise the existing CSV/dashboard path is unchanged.
+
+Run `scripts/db_export_parity.py` before any cutover. It compares PostgreSQL-generated dates and per-day payloads against the current `public/data/*.json` files and exits non-zero on the first mismatch.
 
 ## Retention Rule
 
