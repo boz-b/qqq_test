@@ -81,6 +81,11 @@ def parse_args() -> argparse.Namespace:
         help="Compare daily brief rows as a set. Useful for cron when DB export preserves existing public JSON order.",
     )
     parser.add_argument(
+        "--allow-extra-postgres-dates",
+        action="store_true",
+        help="Allow PostgreSQL to retain older dates outside the reference source window.",
+    )
+    parser.add_argument(
         "--date",
         action="append",
         dest="dates",
@@ -113,12 +118,23 @@ def main() -> int:
     dates_to_check = args.dates or reference_dates
 
     if not args.dates and reference_dates != postgres_dates:
-        print("[db_export_parity] dates mismatch")
-        print(f"[db_export_parity] source={args.source}")
-        print(f"[db_export_parity] reference_count={len(reference_dates)} postgres_count={len(postgres_dates)}")
-        print(f"[db_export_parity] missing_from_postgres={sorted(set(reference_dates) - set(postgres_dates))}")
-        print(f"[db_export_parity] extra_in_postgres={sorted(set(postgres_dates) - set(reference_dates))}")
-        return 1
+        missing_from_postgres = sorted(set(reference_dates) - set(postgres_dates))
+        extra_in_postgres = sorted(set(postgres_dates) - set(reference_dates))
+        dates_match = not missing_from_postgres and (
+            not extra_in_postgres or args.allow_extra_postgres_dates
+        )
+        if dates_match:
+            print("[db_export_parity] dates differ only by retained PostgreSQL history")
+            print(f"[db_export_parity] source={args.source}")
+            print(f"[db_export_parity] reference_count={len(reference_dates)} postgres_count={len(postgres_dates)}")
+            print(f"[db_export_parity] extra_in_postgres={extra_in_postgres}")
+        else:
+            print("[db_export_parity] dates mismatch")
+            print(f"[db_export_parity] source={args.source}")
+            print(f"[db_export_parity] reference_count={len(reference_dates)} postgres_count={len(postgres_dates)}")
+            print(f"[db_export_parity] missing_from_postgres={missing_from_postgres}")
+            print(f"[db_export_parity] extra_in_postgres={extra_in_postgres}")
+            return 1
 
     checked = 0
     for date_label in dates_to_check:

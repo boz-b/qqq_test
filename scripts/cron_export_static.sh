@@ -68,10 +68,10 @@ PY
     python scripts/db_backfill.py --migrate-first --apply
 
     echo "[$(date --iso-8601=seconds)] Checking PostgreSQL export parity against current CSV source"
-    python scripts/db_export_parity.py --source csv --ignore-event-order
+    python scripts/db_export_parity.py --source csv --ignore-event-order --allow-extra-postgres-dates
 
     echo "[$(date --iso-8601=seconds)] Exporting static dashboard data from PostgreSQL"
-    QQQ_DATA_BACKEND=postgres python export_json.py ${EXPORT_JSON_FLAGS}
+    QQQ_DATA_BACKEND=postgres QQQ_POSTGRES_EXPORT_DATE_SOURCE=csv python export_json.py ${EXPORT_JSON_FLAGS}
 else
     echo "[$(date --iso-8601=seconds)] Exporting static dashboard data from CSV"
     QQQ_DATA_BACKEND=csv python export_json.py ${EXPORT_JSON_FLAGS}

@@ -40,6 +40,13 @@ DATA_BACKEND = (os.getenv("QQQ_DATA_BACKEND") or "csv").strip().lower()
 if DATA_BACKEND not in {"csv", "postgres"}:
     print(f"ERROR: unsupported QQQ_DATA_BACKEND={DATA_BACKEND!r}. Use 'csv' or 'postgres'.")
     sys.exit(1)
+POSTGRES_DATE_SOURCE = (os.getenv("QQQ_POSTGRES_EXPORT_DATE_SOURCE") or "postgres").strip().lower()
+if DATA_BACKEND == "postgres" and POSTGRES_DATE_SOURCE not in {"postgres", "csv"}:
+    print(
+        "ERROR: unsupported QQQ_POSTGRES_EXPORT_DATE_SOURCE="
+        f"{POSTGRES_DATE_SOURCE!r}. Use 'postgres' or 'csv'."
+    )
+    sys.exit(1)
 
 # ── Step 1: Refresh source data ───────────────────────────────────────────────
 # Call the same refresh command documented in CLAUDE.md.
@@ -51,6 +58,8 @@ print(f"\n{'='*60}")
 print(f"export_json.py  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"{'='*60}")
 print(f"Data backend: {DATA_BACKEND}")
+if DATA_BACKEND == "postgres":
+    print(f"PostgreSQL export date source: {POSTGRES_DATE_SOURCE}")
 
 if DATA_BACKEND == "csv":
     try:
@@ -70,11 +79,17 @@ else:
 # postgres_export.py mirrors the same payload shape from PostgreSQL when
 # QQQ_DATA_BACKEND=postgres is explicitly selected.
 if DATA_BACKEND == "postgres":
-    from postgres_export import get_available_dates, get_day_data   # noqa: E402
+    from postgres_export import get_available_dates as get_postgres_available_dates, get_day_data   # noqa: E402
+    if POSTGRES_DATE_SOURCE == "csv":
+        from dashboard import get_available_dates as get_csv_available_dates   # noqa: E402
+
+        dates = get_csv_available_dates()
+    else:
+        dates = get_postgres_available_dates()
 else:
     from dashboard import get_available_dates, get_day_data   # noqa: E402
 
-dates = get_available_dates()
+    dates = get_available_dates()
 if not dates:
     print("ERROR: no trading dates found in intraday CSV. Exiting.")
     sys.exit(1)
