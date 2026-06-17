@@ -46,10 +46,10 @@ PY
 # Allow manual repair runs to override NEWS_TARGET_DATE while cron uses the current New York market date.
 
 echo "[$(date --iso-8601=seconds)] Refreshing combined news + official macro feed for market day: ${TARGET_DATE}"
-# Print the exact single date being refreshed; this should produce at most one Gemini request.
+# Print the exact single date being refreshed; news summaries use one Gemini request and macro actuals use one bounded Gemini Search lookup.
 
 python news_feeds.py --start "${TARGET_DATE}" --end "${TARGET_DATE}" --summary-date "${TARGET_DATE}"
-# Gather all Finnhub + FinancialJuice items for TARGET_DATE, then make one Gemini summary request for that day.
+# Gather all Finnhub + FinancialJuice items for TARGET_DATE, then fill released macro actuals before the final export.
 
 EXPORT_JSON_FLAGS="${EXPORT_JSON_FLAGS:-}"
 # Allow tests to pass --no-git through the environment while cron uses the default commit/push behavior.
