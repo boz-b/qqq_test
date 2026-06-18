@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import os
 import json
 import xml.etree.ElementTree as ET
@@ -20,6 +21,7 @@ BASE_DIR = Path(__file__).resolve().parent  # Find the folder that contains this
 DATA_DIR = BASE_DIR / "data"  # Build the path to the local data-cache folder used by the refresh scripts.
 DATA_DIR.mkdir(exist_ok=True)  # Create the data folder if it is missing, and do nothing if it already exists.
 ENV_DIR = BASE_DIR / "env"  # Build the path to the ignored local env folder where real API-key files should live.
+CALENDAR_ACTUALS_ENV_FILE = ENV_DIR / "calendar_actuals.env"  # Optional separate Gemini key/settings file for Search-grounded actuals.
 
 COMBINED_EVENTS_CSV = DATA_DIR / "ff_events.csv"  # Store the merged calendar/news events in the CSV file read by the dashboard/export flow.
 NEWS_CSV = DATA_DIR / "news_events.csv"  # Store intermediate news-event data here when the news pipeline writes a separate cache.
@@ -72,6 +74,20 @@ def _load_env() -> None:
     for env_path in ENV_FILES:  # Check each allowed local env file in priority order.
         if env_path.exists():  # Only load files that actually exist on this machine.
             load_dotenv(env_path, override=False)  # Add variables to the process while preserving any variables already set by the shell.
+
+
+def _load_calendar_actuals_env() -> None:
+    """Load actuals-specific Gemini settings after shared env so they can override safely."""
+    _load_env()
+    if CALENDAR_ACTUALS_ENV_FILE.exists():
+        load_dotenv(CALENDAR_ACTUALS_ENV_FILE, override=True)
+
+
+def _api_key_fingerprint(api_key: str) -> str:
+    """Return a short non-secret fingerprint for matching local quota backoff state."""
+    if not api_key:
+        return ""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
 
 
 def _request_cache_ttl_days() -> int:
@@ -314,16 +330,22 @@ def _llm_summary_config() -> dict[str, Any] | None:
 
 def _calendar_actuals_config() -> dict[str, Any] | None:
     """Return Gemini Search settings for filling released macro actual values."""
-    _load_env()
+    _load_calendar_actuals_env()
     if not _env_flag("LLM_CALENDAR_ACTUALS_ENABLED", False):
         return None
 
-    provider = _clean_text(os.getenv("LLM_SUMMARY_PROVIDER", "gemini")).lower()
+    provider = (
+        _clean_text(os.getenv("LLM_CALENDAR_ACTUALS_PROVIDER"))
+        or _clean_text(os.getenv("LLM_SUMMARY_PROVIDER", "gemini"))
+    ).lower()
     if provider not in {"gemini", "google", "google-gemini"}:
         return None
 
     api_key = (
-        _clean_text(os.getenv("GEMINI_API_KEY"))
+        _clean_text(os.getenv("GEMINI_CALENDAR_ACTUALS_API_KEY"))
+        or _clean_text(os.getenv("GOOGLE_CALENDAR_ACTUALS_API_KEY"))
+        or _clean_text(os.getenv("LLM_CALENDAR_ACTUALS_API_KEY"))
+        or _clean_text(os.getenv("GEMINI_API_KEY"))
         or _clean_text(os.getenv("GOOGLE_API_KEY"))
         or _clean_text(os.getenv("LLM_SUMMARY_API_KEY"))
     )
@@ -332,25 +354,32 @@ def _calendar_actuals_config() -> dict[str, Any] | None:
 
     model = (
         _clean_text(os.getenv("GEMINI_CALENDAR_ACTUALS_MODEL"))
+        or _clean_text(os.getenv("LLM_CALENDAR_ACTUALS_MODEL"))
         or _clean_text(os.getenv("GEMINI_MODEL"))
         or _clean_text(os.getenv("LLM_SUMMARY_MODEL"))
     )
     if _is_placeholder(model):
         model = GEMINI_MODEL_DEFAULT
 
-    api_base = _clean_text(os.getenv("GEMINI_API_BASE")) or _clean_text(os.getenv("LLM_SUMMARY_API_BASE"))
+    api_base = (
+        _clean_text(os.getenv("GEMINI_CALENDAR_ACTUALS_API_BASE"))
+        or _clean_text(os.getenv("LLM_CALENDAR_ACTUALS_API_BASE"))
+        or _clean_text(os.getenv("GEMINI_API_BASE"))
+        or _clean_text(os.getenv("LLM_SUMMARY_API_BASE"))
+    )
     if _is_placeholder(api_base):
         api_base = GEMINI_API_BASE_DEFAULT
 
     return {
         "api_key": api_key,
+        "api_key_fingerprint": _api_key_fingerprint(api_key),
         "api_base": api_base.rstrip("/"),
         "model": model,
         "timeout": _env_int("LLM_CALENDAR_ACTUALS_TIMEOUT_SECONDS", DEFAULT_CALENDAR_ACTUALS_TIMEOUT_SECONDS, 5, 180),
         "delay_minutes": _env_int("LLM_CALENDAR_ACTUALS_DELAY_MINUTES", DEFAULT_CALENDAR_ACTUALS_DELAY_MINUTES, 0, 240),
         "max_events_per_day": _env_int("LLM_CALENDAR_ACTUALS_MAX_EVENTS_PER_DAY", DEFAULT_CALENDAR_ACTUALS_MAX_EVENTS_PER_DAY, 1, 25),
         "max_output_tokens": _env_int("LLM_CALENDAR_ACTUALS_MAX_OUTPUT_TOKENS", DEFAULT_CALENDAR_ACTUALS_MAX_OUTPUT_TOKENS, 256, 4096),
-        "thinking_budget": _env_int("LLM_SUMMARY_THINKING_BUDGET", DEFAULT_LLM_SUMMARY_THINKING_BUDGET, 0, 4096),
+        "thinking_budget": _env_int("LLM_CALENDAR_ACTUALS_THINKING_BUDGET", DEFAULT_LLM_SUMMARY_THINKING_BUDGET, 0, 4096),
         "quota_backoff_hours": _env_int("LLM_CALENDAR_ACTUALS_QUOTA_BACKOFF_HOURS", DEFAULT_CALENDAR_ACTUALS_QUOTA_BACKOFF_HOURS, 0, 72),
     }
 
@@ -691,6 +720,10 @@ def _calendar_actuals_quota_backoff_until(config: dict[str, Any], now_et: pd.Tim
         return None
     try:
         payload = json.loads(CALENDAR_ACTUALS_BACKOFF_JSON.read_text())
+        marker_fingerprint = _clean_text(payload.get("api_key_fingerprint"))
+        config_fingerprint = _clean_text(config.get("api_key_fingerprint"))
+        if not marker_fingerprint or (config_fingerprint and marker_fingerprint != config_fingerprint):
+            return None
         last_429 = pd.Timestamp(payload.get("last_429_utc")).tz_convert("UTC")
     except Exception:
         return None
@@ -707,6 +740,7 @@ def _record_calendar_actuals_quota_backoff(config: dict[str, Any]) -> None:
     payload = {
         "last_429_utc": datetime.now(timezone.utc).isoformat(),
         "reason": "Gemini calendar actuals search returned HTTP 429",
+        "api_key_fingerprint": _clean_text(config.get("api_key_fingerprint")),
     }
     CALENDAR_ACTUALS_BACKOFF_JSON.write_text(json.dumps(payload, indent=2))
 

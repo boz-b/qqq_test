@@ -86,6 +86,7 @@ def main() -> None:
             now_et=datetime(2099, 1, 2, 10, 5, tzinfo=ZoneInfo("America/New_York")),
             config={
                 "api_key": "test",
+                "api_key_fingerprint": news_feeds._api_key_fingerprint("test"),
                 "api_base": "https://example.com",
                 "model": "models/test",
                 "timeout": 5,
@@ -97,12 +98,16 @@ def main() -> None:
             },
         )
 
-        backoff_path.write_text(json.dumps({"last_429_utc": "2099-01-02T15:00:00+00:00"}))
+        backoff_path.write_text(json.dumps({
+            "last_429_utc": "2099-01-02T15:00:00+00:00",
+            "api_key_fingerprint": news_feeds._api_key_fingerprint("test"),
+        }))
         skipped = news_feeds.enrich_calendar_actuals_with_gemini(
             rows,
             now_et=datetime(2099, 1, 2, 10, 5, tzinfo=ZoneInfo("America/New_York")),
             config={
                 "api_key": "test",
+                "api_key_fingerprint": news_feeds._api_key_fingerprint("test"),
                 "api_base": "https://example.com",
                 "model": "models/test",
                 "timeout": 5,

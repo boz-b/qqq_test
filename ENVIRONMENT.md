@@ -28,14 +28,15 @@ The daily news pipeline stores concise Gemini-generated bullet summaries instead
 4. Keep `GEMINI_MODEL=gemini-flash-latest` for the cheap/fast Gemini Flash alias, or change it to another Gemini model such as `gemini-3-flash-preview`.
 5. Keep `FINANCIALJUICE_FEED_ENABLED=1` if you want Gemini to include same-day FinancialJuice breaking-news RSS items in addition to Finnhub candidates.
 6. Set `LLM_SUMMARY_ENABLED=1` when you want the Tuesday/nightly cron refresh to use Gemini summaries.
-7. Leave `LLM_CALENDAR_ACTUALS_ENABLED=0` unless you explicitly want nightly cron to spend Gemini Search quota on released macro-calendar `Actual` values.
-8. Do not commit files under `env/`.
+7. For actual-value Search grounding, copy `env.example/calendar_actuals.env.example` to ignored `env/calendar_actuals.env` and put the separate key in `GEMINI_CALENDAR_ACTUALS_API_KEY=...`.
+8. Leave `LLM_CALENDAR_ACTUALS_ENABLED=0` unless you explicitly want nightly cron to spend Gemini Search quota on released macro-calendar `Actual` values.
+9. Do not commit files under `env/`.
 
 The implementation calls Gemini's REST `generateContent` endpoint and the public FinancialJuice RSS feed with `requests`, so no extra Python SDK dependency is required. Gemini is requested with JSON mode plus a response schema; `LLM_SUMMARY_MAX_OUTPUT_TOKENS` controls how much room the model has to close the returned JSON, and `LLM_SUMMARY_THINKING_BUDGET=0` keeps hidden thinking from consuming that output budget.
 
 If Gemini fails for a date that already has summary rows, cron preserves those existing summaries. If there is no usable summary, cron skips news persistence for that date instead of writing raw headline fallback rows. Raw provider responses are only kept briefly in ignored local `data/news_request_cache.csv`; `NEWS_REQUEST_CACHE_TTL_DAYS` controls that cache's retention window.
 
-Macro-calendar actual lookup is opt-in. When enabled, it runs only for the current or future target date, waits `LLM_CALENDAR_ACTUALS_DELAY_MINUTES` after the scheduled event time, and leaves `Actual` blank unless Gemini Search returns a clear released value. It does not backfill previous days. If Gemini returns HTTP 429, the pipeline writes an ignored local backoff marker and skips more actual lookups for `LLM_CALENDAR_ACTUALS_QUOTA_BACKOFF_HOURS`.
+Macro-calendar actual lookup is opt-in and can use a separate Gemini key from `env/calendar_actuals.env`. When enabled, it runs only for the current or future target date, waits `LLM_CALENDAR_ACTUALS_DELAY_MINUTES` after the scheduled event time, and leaves `Actual` blank unless Gemini Search returns a clear released value. It does not backfill previous days. If Gemini returns HTTP 429, the pipeline writes an ignored local backoff marker tied to a non-secret key fingerprint and skips more actual lookups for `LLM_CALENDAR_ACTUALS_QUOTA_BACKOFF_HOURS`.
 
 ## PostgreSQL database backend
 
