@@ -68,6 +68,19 @@ W2_START        = "10:00"   # vertical annotation — W2 start
 DEFAULT_PORT = 8765
 
 
+def _event_field(value) -> str:
+    """Return a dashboard-safe event text value, treating pandas NaN as blank."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    return "" if text.lower() in {"nan", "nat", "none", "null"} else text
+
+
 def _resolve_csv_path(primary: str, legacy: str) -> str:
     """Prefer the canonical data/ path, but tolerate older repo-root CSVs."""
     if os.path.exists(primary):
@@ -408,11 +421,11 @@ def _events_for_day(trade_date) -> list[dict]:
 
         events.append({
             "time":     t_str,
-            "event":    str(row.get("Event",    "") or ""),
-            "impact":   str(row.get("Impact",   "") or ""),
-            "actual":   str(row.get("Actual",   "") or ""),
-            "forecast": str(row.get("Forecast", "") or ""),
-            "previous": str(row.get("Previous", "") or ""),
+            "event":    _event_field(row.get("Event")),
+            "impact":   _event_field(row.get("Impact")),
+            "actual":   _event_field(row.get("Actual")),
+            "forecast": _event_field(row.get("Forecast")),
+            "previous": _event_field(row.get("Previous")),
         })
 
     return events

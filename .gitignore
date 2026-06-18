@@ -15,6 +15,9 @@ logs/
 # Ignore local CSV data caches because they can be regenerated and may be large.
 data/*.csv
 
+# Ignore local Gemini Search quota backoff state from calendar actual enrichment.
+data/calendar_actuals_quota_backoff.json
+
 # Ignore legacy repo-root CSV caches after removing them from the tracked tree.
 qqq_1m.csv
 qqq_daily.csv

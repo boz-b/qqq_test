@@ -131,11 +131,18 @@ def _prior_close(trade_date) -> float | None:
     return _DAILY_CLOSES.get(prior[-1])
 
 
-def _event_text(value: Any, missing: str = "nan") -> str:
+def _event_text(value: Any, missing: str = "") -> str:
     if value is None:
         return missing
+    try:
+        if pd.isna(value):
+            return missing
+    except (TypeError, ValueError):
+        pass
     text = str(value).strip()
-    return text if text else missing
+    if not text or text.lower() in {"nan", "nat", "none", "null"}:
+        return missing
+    return text
 
 
 def _events_for_day(trade_date) -> list[dict]:

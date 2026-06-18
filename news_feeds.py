@@ -315,8 +315,7 @@ def _llm_summary_config() -> dict[str, Any] | None:
 def _calendar_actuals_config() -> dict[str, Any] | None:
     """Return Gemini Search settings for filling released macro actual values."""
     _load_env()
-    enabled_default = _env_flag("LLM_SUMMARY_ENABLED", False)
-    if not _env_flag("LLM_CALENDAR_ACTUALS_ENABLED", enabled_default):
+    if not _env_flag("LLM_CALENDAR_ACTUALS_ENABLED", False):
         return None
 
     provider = _clean_text(os.getenv("LLM_SUMMARY_PROVIDER", "gemini")).lower()
