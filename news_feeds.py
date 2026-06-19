@@ -40,7 +40,7 @@ FINANCIALJUICE_FEED_URL_DEFAULT = "https://www.financialjuice.com/feed.ashx?xy=p
 FINANCIALJUICE_USER_AGENT = "qqq_test news refresh (+https://github.com/boz-b/qqq_test)"  # Identify this low-volume RSS fetch politely.
 NEWS_SYMBOLS = ["QQQ", "SPY", "NVDA", "GOOGL", "META"]  # Symbols whose news can be relevant for the QQQ/Nasdaq daily brief.
 MAX_MACRO_PER_DAY = 5  # Limit deterministic macro/calendar rows per day before combining with news items.
-MAX_NEWS_PER_DAY = 2  # Legacy cap retained for manual experiments; persisted dashboard news should be summarized, not raw headlines.
+MAX_NEWS_PER_DAY = 2  # Cap heuristic fallback headlines when Gemini summaries are temporarily unavailable.
 DEFAULT_REQUEST_CACHE_TTL_DAYS = 7  # Keep raw provider responses only briefly in the ignored local cache.
 GEMINI_API_BASE_DEFAULT = "https://generativelanguage.googleapis.com/v1beta"  # Gemini Developer API REST base URL used by the no-SDK integration.
 GEMINI_MODEL_DEFAULT = "gemini-flash-latest"  # Cheap/fast Gemini model alias from Google's REST quickstart, overridable in env.
@@ -525,7 +525,7 @@ def _score_news_item(item: dict[str, Any]) -> tuple[int, pd.Timestamp]:
 
 
 def _news_event_record(score: int, dt: pd.Timestamp, item: dict[str, Any]) -> dict[str, Any]:
-    """Convert one raw Finnhub item into the old direct-headline event shape for manual debugging only."""
+    """Convert one raw provider item into the old direct-headline event shape for manual debugging only."""
     headline = _clean_text(item.get("headline"))  # Read the Finnhub headline without altering the source payload.
     source = _clean_text(item.get("source"))  # Read the source name for attribution.
     return {  # Return the normalized dashboard/archive row.
@@ -539,6 +539,31 @@ def _news_event_record(score: int, dt: pd.Timestamp, item: dict[str, Any]) -> di
         "Kind": "news",  # Keep internal kind so build_combined_events can cap fallback news rows.
         "Priority": score,  # Preserve heuristic score for sorting fallback headlines.
     }  # End normalized raw-news row.
+
+
+def _related_news_fallback_records(
+    scored_items: list[tuple[int, pd.Timestamp, dict[str, Any]]],
+    max_items: int,
+) -> list[dict[str, Any]]:
+    """Return top-scored related headlines in the summary-compatible event shape."""
+    fallback_records: list[dict[str, Any]] = []
+    for score, dt, item in scored_items[:max_items]:
+        headline = _clip_text(item.get("headline"), 180)
+        if not headline:
+            continue
+        source = _clip_text(item.get("source"), 40)
+        fallback_records.append({
+            "DateTime": dt.tz_convert("America/New_York").isoformat(),
+            "Currency": "USD",
+            "Impact": "News Summary",
+            "Event": f"Related news: {headline} [{source}]" if source else f"Related news: {headline}",
+            "Actual": "",
+            "Forecast": "",
+            "Previous": "",
+            "Kind": "news_summary",
+            "Priority": max(1, min(int(score), 10)),
+        })
+    return fallback_records
 
 
 def _prompt_candidate_record(score: int, dt: pd.Timestamp, item: dict[str, Any]) -> dict[str, Any]:
@@ -1037,7 +1062,7 @@ def _existing_news_summary_records_for_day(trade_date: date_cls) -> list[dict[st
 
 
 def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = MAX_NEWS_PER_DAY, llm_summary_dates: set[date_cls] | None = None) -> pd.DataFrame:
-    """Fetch Finnhub plus FinancialJuice news and persist only Gemini summary bullets."""  # Main news path used by nightly cron.
+    """Fetch Finnhub plus FinancialJuice news and persist Gemini summaries or related-news fallback rows."""  # Main news path used by nightly cron.
     _load_env()  # Load local ignored env files before trying to read the Finnhub key.
     api_key = os.getenv("FINNHUB_API_KEY", "").strip()  # Read the key from the process environment without printing it.
     if not api_key:  # Stop early if no usable key was supplied by the shell or ignored env files.
@@ -1118,11 +1143,13 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
                 break  # Stop adding FinancialJuice rows for this date.
 
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)  # Highest relevance and newest items go first.
-        summary_records: list[dict[str, Any]] = []  # Hold Gemini summary rows if the optional call succeeds.
+        summary_records: list[dict[str, Any]] = []  # Hold Gemini summary rows, preserved rows, or summary-compatible fallback rows.
         existing_summary_records = _existing_news_summary_records_for_day(day) if llm_config and scored else []  # Preserve good summaries on reruns.
         summary_date_allowed = allowed_summary_dates is None or day in allowed_summary_dates  # Cron passes exactly one allowed date.
         summary_start_allowed = summary_start_date is None or day >= summary_start_date  # Avoid old-date AI backfills.
+        attempted_summary = False  # Track whether a configured Gemini request was supposed to produce rows for this date.
         if llm_config and scored and summary_date_allowed and summary_start_allowed:  # Only call Gemini for the explicitly allowed same-day batch.
+            attempted_summary = True
             try:  # Model/API failures should not break the nightly refresh.
                 llm_request_count += 1  # Track the actual number of Gemini requests made.
                 limited_count = min(len(scored), llm_config["max_candidate_items"])  # Log the single batched prompt size without secrets.
@@ -1132,13 +1159,18 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
                 if existing_summary_records:  # If a previous good summary exists, keep it rather than degrading to raw rows.
                     summary_records = existing_summary_records
                     print(f"[news_feeds] Gemini summary failed for {day}: {exc}; keeping existing summary rows")
-                else:  # First run for that date should not persist raw headlines.
-                    print(f"[news_feeds] Gemini summary failed for {day}: {exc}; skipping raw news persistence")  # Log no secrets, only the date/error.
+                else:  # First run for that date should still leave top related news on the website.
+                    print(f"[news_feeds] Gemini summary failed for {day}: {exc}; using top related news fallback")  # Log no secrets, only the date/error.
         elif existing_summary_records and summary_start_allowed:  # Do not discard already-good summaries when refreshing a wider range.
             summary_records = existing_summary_records
 
-        if summary_records:  # Successful or preserved Gemini output is the only persisted news format.
-            records.extend(summary_records)  # Add AI summary bullets to the normalized output.
+        if not summary_records and attempted_summary and scored:
+            summary_records = _related_news_fallback_records(scored, max_items_per_day)
+            if summary_records:
+                print(f"[news_feeds] Added {len(summary_records)} top related news fallback row(s) for {day}")
+
+        if summary_records:  # Successful Gemini output, preserved rows, or top related fallback is the persisted news format.
+            records.extend(summary_records)  # Add summary-compatible news rows to the normalized output.
         elif scored:  # Raw candidates are intentionally not saved to the event archive.
             print(f"[news_feeds] No summary rows for {day}; skipped {min(len(scored), max_items_per_day)} raw headline fallback row(s)")
 
@@ -1368,7 +1400,7 @@ def build_combined_events(start_date: str, end_date: str, llm_summary_dates: set
 
 
 def _drop_raw_news_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove old direct-headline news rows so persisted event data stays summary-only."""
+    """Remove old direct-headline News rows while keeping summary-compatible fallback rows."""
     if df.empty:
         return df
     impact = df.get("Impact", pd.Series("", index=df.index)).astype(str).str.strip().str.lower()
@@ -1463,7 +1495,7 @@ def _merge_event_archive(out: pd.DataFrame, output_csv: Path | str, replace_date
     # ↑ Combine preserved historical rows with the newly fetched rows for this run.
 
     merged = _drop_raw_news_rows(merged)
-    # ↑ Enforce Boz's rule that persisted news rows are summaries, not raw headlines.
+    # ↑ Drop legacy Impact=News rows; Gemini fallback headlines are stored as summary-compatible related-news rows.
 
     merged["DateTime"] = pd.to_datetime(merged["DateTime"], utc=True, errors="coerce")
     # ↑ Parse timestamps through UTC so mixed timezone offsets from different feeds do not break pandas.

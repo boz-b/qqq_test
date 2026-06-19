@@ -356,12 +356,13 @@ def news_summaries_from_events(events: list[MarketEvent]) -> list[NewsSummary]:
     for event in events:
         if event.kind != "news_summary":
             continue
+        model_provider = "heuristic_fallback" if event.title.lower().startswith("related news:") else "gemini"
         summaries.append(
             NewsSummary(
                 event_key=(event.event_time.isoformat(), event.kind, event.source, event.title),
                 summary_text=event.title,
                 source_attribution=_source_attribution(event.title),
-                model_provider="gemini",
+                model_provider=model_provider,
                 model_name=None,
             )
         )
