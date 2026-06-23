@@ -15,6 +15,7 @@ compile: venv/bin/python
 test: venv/bin/python
 	$(PYTHON) scripts/test_news_summary_fallback.py
 	$(PYTHON) scripts/test_calendar_actual_enrichment.py
+	$(PYTHON) scripts/test_static_public_data.py
 
 smoke: venv/bin/python
 	$(PYTHON) dashboard.py --smoke-test

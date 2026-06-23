@@ -26,6 +26,7 @@ Closes #
 
 - [ ] `make ci`
 - [ ] Regression tests added/updated
+- [ ] Clean-checkout CI constraints considered
 - [ ] Public data regenerated, if needed:
 - [ ] Manual verification, if needed:
 
