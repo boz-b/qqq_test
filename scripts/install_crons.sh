@@ -18,12 +18,12 @@ mkdir -p "$REPO_DIR/logs"
 
 CRON_CONTENT=$(cat <<EOF
 # BEGIN qqq_test automated refresh jobs managed by scripts/install_crons.sh
-# Tuesday 02:00 local computer time: refresh weekly USD calendar first, then run Finnhub/news refresh and final Vercel export.
+# Tuesday 02:00 local computer time: switch to main, refresh weekly USD calendar first, then run Finnhub/news refresh and final Vercel export.
 # Export uses CSV by default; set QQQ_CRON_DATA_BACKEND=postgres in ignored env/database.env for the parity-checked DB path.
-0 2 * * 2 cd $REPO_DIR && /usr/bin/env bash scripts/tuesday_refresh.sh >> $TUESDAY_LOG 2>&1
-# Wednesday-Saturday 02:00 local computer time: run Finnhub/news refresh and final Vercel export.
+0 2 * * 2 cd $REPO_DIR && ( git fetch origin main && git checkout main && git merge --ff-only FETCH_HEAD && /usr/bin/env bash scripts/tuesday_refresh.sh ) >> $TUESDAY_LOG 2>&1
+# Wednesday-Saturday 02:00 local computer time: switch to main, run Finnhub/news refresh and final Vercel export.
 # Export uses CSV by default; set QQQ_CRON_DATA_BACKEND=postgres in ignored env/database.env for the parity-checked DB path.
-0 2 * * 3-6 cd $REPO_DIR && /usr/bin/env bash scripts/nightly_refresh.sh >> $NIGHTLY_LOG 2>&1
+0 2 * * 3-6 cd $REPO_DIR && ( git fetch origin main && git checkout main && git merge --ff-only FETCH_HEAD && /usr/bin/env bash scripts/nightly_refresh.sh ) >> $NIGHTLY_LOG 2>&1
 # END qqq_test automated refresh jobs managed by scripts/install_crons.sh
 EOF
 )
