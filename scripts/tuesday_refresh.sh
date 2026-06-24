@@ -16,6 +16,9 @@ echo "[$(date --iso-8601=seconds)] Starting Tuesday combined weekly + Finnhub re
 mkdir -p logs data
 # Ensure local runtime folders exist before either child script writes files.
 
+/usr/bin/env bash scripts/ensure_deploy_branch.sh
+# Switch to the configured deploy branch once before the coordinated Tuesday refresh starts.
+
 echo "[$(date --iso-8601=seconds)] Step 1/2: refresh weekly USD calendar without exporting yet"
 # Explain that the calendar cache updates first, but the final deploy waits for the Finnhub refresh.
 

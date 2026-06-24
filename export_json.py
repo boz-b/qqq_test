@@ -169,6 +169,17 @@ if NO_GIT:
     # ↑ Exit successfully before the normal git staging/commit/push deployment step.
 
 # ── Step 4: git commit + push ─────────────────────────────────────────────────
+DEPLOY_BRANCH = os.getenv("QQQ_DEPLOY_BRANCH", "main").strip() or "main"
+DEPLOY_REMOTE = os.getenv("QQQ_DEPLOY_REMOTE", "origin").strip() or "origin"
+current_branch = subprocess.run(
+    ["git", "branch", "--show-current"],
+    capture_output=True, text=True, check=True
+).stdout.strip()
+if current_branch != DEPLOY_BRANCH:
+    print(f"ERROR: refusing to deploy from branch {current_branch!r}; expected {DEPLOY_BRANCH!r}.")
+    print("Run scripts/ensure_deploy_branch.sh first, or set QQQ_DEPLOY_BRANCH intentionally.")
+    sys.exit(1)
+
 # Stage only the pre-computed data files — never the raw CSVs (they're in .gitignore).
 print("\nStaging public/data/ …")
 subprocess.run(["git", "add", "public/data/"], check=True)
@@ -199,7 +210,10 @@ for attempt, wait in enumerate([0, 2, 4, 8, 16], start=1):
     if wait:
         print(f"Push attempt {attempt} (waiting {wait}s) …")
         time.sleep(wait)
-    push = subprocess.run(["git", "push"], capture_output=True, text=True)
+    push = subprocess.run(
+        ["git", "push", DEPLOY_REMOTE, f"HEAD:{DEPLOY_BRANCH}"],
+        capture_output=True, text=True,
+    )
     if push.returncode == 0:
         print(f"Pushed successfully on attempt {attempt}.")
         break

@@ -25,8 +25,8 @@ if [ ! -x venv/bin/python ]; then
 fi
 # Finish the venv preflight check.
 
-git pull --ff-only
-# Pull the latest GitHub code/data only when it can be fast-forwarded safely.
+/usr/bin/env bash scripts/ensure_deploy_branch.sh
+# Switch to the configured deploy branch before cron mutates data or commits public JSON.
 
 source venv/bin/activate
 # Activate the project-local Python environment so python and pip commands use local dependencies.
