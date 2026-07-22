@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+      - "agent/**"
+      - "fix/**"
+      - "feature/**"
+      - "hotfix/**"
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Compile sources
+        run: python -m py_compile *.py scripts/*.py
+
+      - name: Run focused regression tests
+        run: |
+          python scripts/test_news_summary_fallback.py
+          python scripts/test_calendar_actual_enrichment.py
+          python scripts/test_static_public_data.py
+          python scripts/test_no_tracked_secrets.py
+
+      - name: Validate shell scripts
+        run: bash -n scripts/*.sh
+
+      - name: Database migration dry run
+        run: python scripts/db_migrate.py --dry-run
