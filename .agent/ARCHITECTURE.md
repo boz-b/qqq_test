@@ -7,7 +7,7 @@ This repo maintains a QQQ intraday dashboard and static website. It combines mar
 ## Current Boundaries
 
 - `data_loader.py` refreshes intraday and daily QQQ price CSV caches.
-- `news_feeds.py` builds the daily brief from weekly USD macro calendar data, Finnhub, FinancialJuice RSS, and optional Gemini summaries.
+- `news_feeds.py` builds the daily brief from weekly USD macro calendar data, optional Brave Search actual enrichment, Finnhub, FinancialJuice RSS, and optional Gemini news summaries.
 - `dashboard.py` loads local data and builds per-day dashboard payloads.
 - `export_json.py` writes static JSON under `public/data/` and can commit/push export changes.
 - `postgres_export.py` mirrors dashboard payloads from PostgreSQL when `QQQ_DATA_BACKEND=postgres`.
@@ -20,8 +20,9 @@ This repo maintains a QQQ intraday dashboard and static website. It combines mar
 ```text
 Yahoo Finance price data ──> data/*.csv ──┐
 Weekly USD calendar CSV ───> data/ff_events.csv ─┐
-Finnhub / FinancialJuice ──> news summaries ─────┼─> dashboard.py ─> export_json.py ─> public/data/*.json
-PostgreSQL optional store ───────────────────────┘                 └> GitHub/Vercel
+Brave Search ──────────────> released macro actuals ─┤
+Finnhub / FinancialJuice ──> Gemini news summaries ──┼─> dashboard.py ─> export_json.py ─> public/data/*.json
+PostgreSQL optional store ───────────────────────────┘                 └> GitHub/Vercel
 ```
 
 ## Backend Modes

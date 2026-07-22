@@ -29,14 +29,21 @@ Forbidden files or behavior:
 
 - [ ] Behavior is implemented.
 - [ ] Tests or focused validation cover the new or changed behavior.
-- [ ] `make ci` passes, or skipped checks are explained.
+- [ ] `make pre-pr` passes, or skipped checks are explained.
 - [ ] Data/deployment/cron/database/API quota impact is documented in the PR.
 
 ## Verification
 
 ```bash
-make ci
+make pre-pr
 ```
+
+## Records
+
+- Keep task scope and acceptance criteria in this issue.
+- Keep implementation/review/test details in the eventual PR.
+- Update project `MEMORY.md` only for durable architecture or operational decisions.
+- Update project `WORKLOG.md` only for current handoff, blockers, local-only state, or immediate next steps.
 
 ## Notes
 

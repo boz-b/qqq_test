@@ -20,11 +20,16 @@ Closes #
 
 ## Operational Impact
 
-<!-- State whether this touches public data, cron, PostgreSQL export, API quota, deployment, secrets handling, or local runtime setup. -->
+- Public data:
+- Cron/scheduling:
+- PostgreSQL/schema/export:
+- External APIs/quota:
+- Deployment/frontend payload:
+- Secrets/local runtime:
 
 ## Testing
 
-- [ ] `make ci`
+- [ ] `make pre-pr`
 - [ ] Regression tests added/updated
 - [ ] Clean-checkout CI constraints considered
 - [ ] Public data regenerated, if needed:
@@ -41,4 +46,7 @@ Closes #
 - [ ] Cron/backend behavior is unchanged or explicitly documented
 - [ ] Generated `public/data/` changes are intentional and explained
 - [ ] No files outside declared scope modified without explanation
+- [ ] GitHub issue/PR contains the detailed code-change record
+- [ ] Durable architecture/operational changes were added concisely to project memory, or none were needed
+- [ ] Current blockers/local-only handoff state was added concisely to the worklog, or none was needed
 - [ ] Branch is ready for review

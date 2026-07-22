@@ -6,7 +6,7 @@
 - Do not install Python packages globally.
 - Add dependencies only after explicit approval.
 - Prefer stdlib or existing project dependencies for tests and helpers.
-- Use `make ci` as the local verification gate.
+- Use `make pre-pr` as the final local verification gate; `make ci` remains the code/test gate.
 
 ## Python Style
 
@@ -28,7 +28,8 @@
 - CSV export remains the conservative default path unless a task explicitly changes backend behavior.
 - PostgreSQL export must keep parity checks before scheduled publish.
 - Gemini news summaries must preserve existing summaries on transient failures.
-- Gemini Search calendar actuals must remain opt-in and quota-aware.
+- Brave Search calendar actuals must remain opt-in, deterministic, HTTPS-only, and quota-aware.
+- Gemini news summaries must remain separate from Brave calendar actual enrichment.
 - Cron scripts should fail before export/commit/push if prerequisite refresh, backfill, or parity checks fail.
 
 ## Tests

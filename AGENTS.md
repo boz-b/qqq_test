@@ -33,8 +33,16 @@ For database or cron work, also read:
 - Non-trivial changes should use an issue, a branch, and a pull request.
 - Do not commit directly to `main` for feature, bugfix, refactor, data-pipeline, or cron changes.
 - Prefer branch names like `agent/issue-123-short-slug` or `fix/issue-123-short-slug`.
-- Run `make ci` before opening a PR when local data/env prerequisites are available.
+- Run `make pre-pr` before opening a PR when local data/env prerequisites are available.
 - Use `scripts/agent_task.sh` for local branch/worktree and PR helpers.
+
+## Records And Source Of Truth
+
+- GitHub issues are the canonical record for task scope and acceptance criteria.
+- Pull requests are the canonical record for implementation details, review discussion, test evidence, and merge history.
+- Project `MEMORY.md` stores durable architecture, operational decisions, and facts needed across sessions but not represented by code alone.
+- Project `WORKLOG.md` stores only current handoff state, blockers, local-only runtime facts, and immediate next steps.
+- Do not duplicate detailed issue/PR histories in project memory files. After merge, keep a concise pointer to the issue/PR plus any durable operational consequence.
 
 ## Scope Discipline
 
@@ -42,4 +50,4 @@ For database or cron work, also read:
 - Declare expected files before implementation.
 - Preserve existing cron behavior unless the task explicitly changes scheduled exports.
 - Keep CSV and PostgreSQL paths compatible unless the task is specifically a backend cutover.
-- If a task touches Gemini Search actuals, API quota behavior, Postgres cron export, Vercel data publishing, or historical git data, call out the operational risk in the PR.
+- If a task touches Brave calendar actuals, Gemini news summaries, API quota behavior, Postgres cron export, Vercel data publishing, or historical git data, call out the operational risk in the PR.

@@ -15,7 +15,7 @@ Usage:
   scripts/agent_task.sh status
   scripts/agent_task.sh checks
   scripts/agent_task.sh start <issue-id> <slug> [--worktree] [--prefix agent|fix|feature]
-  scripts/agent_task.sh open-pr [--ready]
+  scripts/agent_task.sh open-pr [--ready] [--title <title>] [--body-file <path>]
   scripts/agent_task.sh cleanup <branch>
 
 Examples:
@@ -73,7 +73,7 @@ ensure_venv() {
 
 run_checks() {
   ensure_venv
-  make ci
+  make pre-pr
 }
 
 cmd_status() {
@@ -146,11 +146,23 @@ cmd_start() {
 
 cmd_open_pr() {
   local ready=0
+  local title=""
+  local body_file=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --ready)
         ready=1
         shift
+        ;;
+      --title)
+        [ "$#" -ge 2 ] || die "--title requires a value"
+        title="$2"
+        shift 2
+        ;;
+      --body-file)
+        [ "$#" -ge 2 ] || die "--body-file requires a path"
+        body_file="$2"
+        shift 2
         ;;
       *)
         die "unknown open-pr option: $1"
@@ -163,20 +175,34 @@ cmd_open_pr() {
   [ -n "$branch" ] || die "not on a branch"
   [ "$branch" != "$BASE" ] || die "refusing to open a PR from $BASE"
 
+  require_clean_checkout
+  run_git fetch "$REMOTE" "$BASE"
+  if ! run_git merge-base --is-ancestor "$REMOTE/$BASE" HEAD; then
+    die "branch does not include the latest $REMOTE/$BASE; update it before opening the PR"
+  fi
+
   run_checks
+
+  [ -n "$title" ] || title="$(run_git log -1 --pretty=%s)"
+  [ -n "$body_file" ] || body_file="$ROOT/.github/PULL_REQUEST_TEMPLATE.md"
+  [ -f "$body_file" ] || die "PR body file does not exist: $body_file"
+  if [ "$ready" -eq 1 ] && [ "$body_file" = "$ROOT/.github/PULL_REQUEST_TEMPLATE.md" ]; then
+    die "--ready requires a completed --body-file instead of the unedited default template"
+  fi
 
   if ! command -v gh >/dev/null 2>&1; then
     printf 'GitHub CLI is not installed. Run these manually after installing/authenticating gh:\n'
     printf '  git push -u %s %s\n' "$REMOTE" "$branch"
-    printf '  gh pr create --base %s --head %s --draft --fill\n' "$BASE" "$branch"
+    printf '  gh pr create --base %s --head %s --title %q --body-file %q%s\n' \
+      "$BASE" "$branch" "$title" "$body_file" "$([ "$ready" -eq 1 ] || printf ' --draft')"
     exit 0
   fi
 
   run_git push -u "$REMOTE" "$branch"
   if [ "$ready" -eq 1 ]; then
-    gh pr create --base "$BASE" --head "$branch" --fill
+    gh pr create --base "$BASE" --head "$branch" --title "$title" --body-file "$body_file"
   else
-    gh pr create --base "$BASE" --head "$branch" --draft --fill
+    gh pr create --base "$BASE" --head "$branch" --draft --title "$title" --body-file "$body_file"
   fi
 }
 
