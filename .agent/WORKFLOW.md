@@ -9,9 +9,9 @@ GitHub is the durable coordination layer. Issues define tasks, branches isolate 
 1. Create or choose a GitHub issue with objective, scope, acceptance criteria, and verification.
 2. Start a branch from the latest `origin/main`.
 3. Use a separate git worktree for parallel agent work when multiple agents may edit at once.
-4. Implement only the declared scope.
-5. Run `make pre-pr` locally when data/env prerequisites exist.
-6. Open a draft PR with the template.
+4. Implement only the declared scope and use focused tests or `make ci` as needed while working.
+5. Open a draft or ready PR with `scripts/agent_task.sh open-pr`; the helper runs the final `make pre-pr` gate exactly once.
+6. If opening a PR without the helper, run `make pre-pr` manually first.
 7. Review the PR diff, generated data changes, operational risk, and CI output.
 8. Merge only after checks pass.
 9. Fast-forward the local `main`, verify the merged state, and clean up the feature branch.
@@ -58,13 +58,13 @@ Create a separate worktree for parallel work:
 scripts/agent_task.sh start 123 news-summary-fallback --worktree
 ```
 
-Run the full pre-PR verification gate:
+Run the full pre-PR gate manually only when not using the PR helper:
 
 ```bash
 make pre-pr
 ```
 
-Open a draft PR from the repository template:
+Open a draft PR from the repository template; this automatically runs `make pre-pr`:
 
 ```bash
 scripts/agent_task.sh open-pr

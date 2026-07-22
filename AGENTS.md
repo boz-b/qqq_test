@@ -33,8 +33,9 @@ For database or cron work, also read:
 - Non-trivial changes should use an issue, a branch, and a pull request.
 - Do not commit directly to `main` for feature, bugfix, refactor, data-pipeline, or cron changes.
 - Prefer branch names like `agent/issue-123-short-slug` or `fix/issue-123-short-slug`.
-- Run `make pre-pr` before opening a PR when local data/env prerequisites are available.
-- Use `scripts/agent_task.sh` for local branch/worktree and PR helpers.
+- Use focused tests or `make ci` during implementation.
+- Use `scripts/agent_task.sh` for local branch/worktree and PR helpers; `open-pr` runs the final `make pre-pr` gate automatically.
+- Run `make pre-pr` manually only when opening a PR without the helper.
 
 ## Records And Source Of Truth
 
