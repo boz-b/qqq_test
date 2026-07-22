@@ -33,6 +33,13 @@ if [ ! -f env/llm_summary.env ]; then
 fi
 # Finish the conditional block that creates the local AI-summary env file only when needed.
 
+if [ ! -f env/brave_search.env ]; then
+# Check whether the optional Brave Search env file is missing before creating a safe placeholder.
+    cp env.example/brave_search.env.example env/brave_search.env
+# Copy the committed safe Brave Search template into the ignored local env folder for macro actual enrichment.
+fi
+# Finish the conditional block that creates the local Brave Search env file only when needed.
+
 if [ ! -f env/database.env ]; then
 # Check whether the optional database env file is missing before creating a safe placeholder.
     cp env.example/database.env.example env/database.env

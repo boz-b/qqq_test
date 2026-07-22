@@ -8,6 +8,8 @@ This project keeps real API keys outside git.
 - `env/finnhub.env` is the real local Finnhub file and is ignored by git.
 - `env.example/llm_summary.env.example` is the safe optional AI-summary template committed to git.
 - `env/llm_summary.env` is the real local AI-summary file and is ignored by git.
+- `env.example/brave_search.env.example` is the safe optional macro-actual Search template committed to git.
+- `env/brave_search.env` is the real local Brave Search file and is ignored by git.
 - `env.example/database.env.example` is the safe optional PostgreSQL template committed to git.
 - `env/database.env` is the real local database config file and is ignored by git.
 - `.env` and `.env.*` are also ignored for local-only overrides.
@@ -28,15 +30,28 @@ The daily news pipeline stores concise Gemini-generated bullet summaries instead
 4. Keep `GEMINI_MODEL=gemini-flash-latest` for the cheap/fast Gemini Flash alias, or change it to another Gemini model such as `gemini-3-flash-preview`.
 5. Keep `FINANCIALJUICE_FEED_ENABLED=1` if you want Gemini to include same-day FinancialJuice breaking-news RSS items in addition to Finnhub candidates.
 6. Set `LLM_SUMMARY_ENABLED=1` when you want the Tuesday/nightly cron refresh to use Gemini summaries.
-7. For actual-value Search grounding, copy `env.example/calendar_actuals.env.example` to ignored `env/calendar_actuals.env` and put the separate key in `GEMINI_CALENDAR_ACTUALS_API_KEY=...`.
-8. Leave `LLM_CALENDAR_ACTUALS_ENABLED=0` unless you explicitly want nightly cron to spend Gemini Search quota on released macro-calendar `Actual` values.
-9. Do not commit files under `env/`.
+7. Gemini is used only for news summarization; macro-calendar actual lookup is configured separately through Brave Search.
+8. Do not commit files under `env/`.
 
 The implementation calls Gemini's REST `generateContent` endpoint and the public FinancialJuice RSS feed with `requests`, so no extra Python SDK dependency is required. Gemini is requested with JSON mode plus a response schema; `LLM_SUMMARY_MAX_OUTPUT_TOKENS` controls how much room the model has to close the returned JSON, and `LLM_SUMMARY_THINKING_BUDGET=0` keeps hidden thinking from consuming that output budget.
 
 If Gemini fails for a date that already has summary rows, cron preserves those existing summaries. If there is no usable summary, cron stores the top scored related-news headlines as `News Summary`-compatible fallback rows so the website still has market news. Raw provider responses are only kept briefly in ignored local `data/news_request_cache.csv`; `NEWS_REQUEST_CACHE_TTL_DAYS` controls that cache's retention window.
 
-Macro-calendar actual lookup is opt-in and can use a separate Gemini key from `env/calendar_actuals.env`. When enabled, it runs only for the current or future target date, waits `LLM_CALENDAR_ACTUALS_DELAY_MINUTES` after the scheduled event time, and leaves `Actual` blank unless Gemini Search returns a clear released value. It does not backfill previous days. If Gemini returns HTTP 429, the pipeline writes an ignored local backoff marker tied to a non-secret key fingerprint and skips more actual lookups for `LLM_CALENDAR_ACTUALS_QUOTA_BACKOFF_HOURS`.
+## Brave Search macro actual setup
+
+Macro-calendar actual lookup uses Brave Web Search and deterministic snippet parsing; it does not require a Gemini actuals key or model call.
+
+1. Copy `env.example/brave_search.env.example` to `env/brave_search.env` if the local file does not already exist.
+2. Put the real Brave subscription token in `BRAVE_SEARCH_API_KEY=...` inside `env/brave_search.env` only.
+3. Keep `LLM_CALENDAR_ACTUALS_PROVIDER=brave`.
+4. Set `LLM_CALENDAR_ACTUALS_ENABLED=1` after the key has been tested.
+5. Keep `BRAVE_SEARCH_MAX_REQUESTS_PER_DAY` and `LLM_CALENDAR_ACTUALS_MAX_EVENTS_PER_DAY` conservative; one Brave request is made per eligible event and the daily cap persists across repeated runs.
+6. Keep the positive and negative cache TTLs conservative so manual reruns do not repeat paid searches unnecessarily.
+7. Do not commit files under `env/`.
+
+When enabled, actual lookup runs only for the current or future target date, waits `LLM_CALENDAR_ACTUALS_DELAY_MINUTES` after the scheduled event time, and keeps `Actual` blank unless dated official snippets or multiple dated allowlisted sources provide a confidently parsed released value. Forecast and previous values are deliberately excluded from the search query. The flow does not backfill previous days. Ignored `data/calendar_actuals_search_state.json` stores daily request counts, cached positive/negative outcomes, and lightweight source provenance. After an HTTP 429, the provider/key-specific backoff marker also honors Brave's `Retry-After` header.
+
+After migrating, the old ignored `env/calendar_actuals.env` Gemini credential is no longer loaded or required. Delete that local file and revoke its separate Gemini key if it will not be used elsewhere.
 
 ## PostgreSQL database backend
 
@@ -68,4 +83,4 @@ Run this from the project root after cloning or restoring the repo:
 scripts/setup_local_runtime.sh
 ```
 
-The script creates `data/`, `logs/`, `env/`, `env/finnhub.env`, `env/llm_summary.env`, `env/database.env`, and `venv/`, installs `requirements.txt` into `venv/`, syntax-checks the Python files, and dry-run validates DB migrations.
+The script creates `data/`, `logs/`, `env/`, `env/finnhub.env`, `env/llm_summary.env`, `env/brave_search.env`, `env/database.env`, and `venv/`, installs `requirements.txt` into `venv/`, syntax-checks the Python files, and dry-run validates DB migrations.
