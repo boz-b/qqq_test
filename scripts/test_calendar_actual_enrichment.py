@@ -61,8 +61,14 @@ def _result(title: str, description: str, url: str, extra_snippets: list[str] | 
     }
 
 
-def _two_results(first: dict, second: dict) -> dict:
-    return {"web": {"results": [first, second]}}
+def _two_results(first: dict, second: dict, target_date: str | None = None) -> dict:
+    payload = {"web": {"results": [first, second]}}
+    if target_date:
+        payload["_qqq_search_context"] = {
+            "target_date": target_date,
+            "freshness": f"{target_date}to{target_date}",
+        }
+    return payload
 
 
 def _macro_row(event: str, when: str, forecast: str, previous: str) -> dict:
@@ -199,7 +205,7 @@ def _parser_cases() -> None:
     )
     assert news_feeds._parse_brave_calendar_actual(conflicting_payload, retail_candidate) == ""
 
-    untrusted_consensus = _two_results(
+    unlisted_consensus = _two_results(
         {
             "title": "Retail sales - July 16, 2026",
             "description": "Retail sales increased 0.4%.",
@@ -213,7 +219,137 @@ def _parser_cases() -> None:
             "extra_snippets": [],
         },
     )
-    assert news_feeds._parse_brave_calendar_actual(untrusted_consensus, retail_candidate) == ""
+    assert news_feeds._parse_brave_calendar_actual(unlisted_consensus, retail_candidate) == "0.4%"
+
+    crude_candidate = {
+        "event": "Crude Oil Inventories",
+        "date": "2026-07-22",
+        "forecast": "-2.0M",
+        "previous": "-1.7M",
+    }
+    single_unlisted_crude = _result(
+        "U.S. crude oil inventories release - July 22, 2026",
+        "Commercial crude oil inventories increased by 2.0 million barrels in the week ending July 17, 2026.",
+        "https://example-energy-news.com/us-crude-stocks",
+    )
+    assert news_feeds._parse_brave_calendar_actual(single_unlisted_crude, crude_candidate) == "2.0M"
+
+    live_shaped_crude = {
+        "web": {
+            "results": [
+                {
+                    "title": "Commercial crude oil inventories increased by 2.0 million barrels - EIA",
+                    "description": (
+                        "For the week ending July 17, 2026, commercial crude oil inventories increased "
+                        "2.0 million barrels to 411.7 million barrels."
+                    ),
+                    "url": "https://www.eia.gov/todayinenergy/detail.php",
+                    "extra_snippets": [],
+                },
+                {
+                    "title": "US Oil, Product Inventories See Builds Across the Board",
+                    "description": (
+                        "July 22, 2026 - Crude oil inventories saw an increase of 2.0 million barrels "
+                        "during the week ending July 17."
+                    ),
+                    "url": "https://example-energy-news.com/current-eia-report",
+                    "extra_snippets": [
+                        "API figures released a day earlier reported crude oil inventories had risen by 2.603 million barrels."
+                    ],
+                },
+                {
+                    "title": "Crude oil historical data - July 22, 2026",
+                    "description": "EIA crude oil stocks rose by 1.4 million barrels last week.",
+                    "url": "https://example-data-site.com/crude-oil-history",
+                    "extra_snippets": [],
+                },
+            ]
+        },
+        "_qqq_search_context": {
+            "target_date": "2026-07-22",
+            "freshness": "2026-07-22to2026-07-22",
+        },
+    }
+    assert news_feeds._parse_brave_calendar_actual(live_shaped_crude, crude_candidate) == "2.0M"
+
+    aggregated_crude = _two_results(
+        {
+            "title": "Weekly Petroleum Status Report - July 22, 2026",
+            "description": "EIA weekly petroleum data for the week ending July 17, 2026.",
+            "url": "https://www.eia.gov/petroleum/supply/weekly/",
+            "extra_snippets": [],
+        },
+        {
+            "title": "Commercial crude stocks post a weekly increase",
+            "description": "Commercial crude oil inventories increased by 2.0 million barrels in the week ending July 17, 2026.",
+            "url": "https://example-energy-news.com/crude-inventory-report",
+            "age": "July 22, 2026",
+            "extra_snippets": [],
+        },
+        target_date="2026-07-22",
+    )
+    assert news_feeds._parse_brave_calendar_actual(aggregated_crude, crude_candidate) == "2.0M"
+
+    stale_aggregated_crude = _two_results(
+        aggregated_crude["web"]["results"][0],
+        {
+            "title": "Commercial crude stocks from the prior report",
+            "description": "Commercial crude oil inventories increased by 2.0 million barrels in the week ending July 10, 2026.",
+            "url": "https://example-energy-news.com/crude-inventory-history",
+            "age": "July 22, 2026",
+            "extra_snippets": [],
+        },
+        target_date="2026-07-22",
+    )
+    assert news_feeds._parse_brave_calendar_actual(stale_aggregated_crude, crude_candidate) == ""
+
+    labeled_values = _result(
+        "Crude oil inventories release - July 22, 2026",
+        (
+            "Commercial crude oil inventories actual was 2.0 million barrels, forecast -2.0 million, "
+            "previous -1.7 million, for the week ending July 17, 2026."
+        ),
+        "https://example-energy-news.com/crude-actual",
+    )
+    assert news_feeds._parse_brave_calendar_actual(labeled_values, crude_candidate) == "2.0M"
+
+    change_and_level = _result(
+        "Crude oil inventories release - July 22, 2026",
+        (
+            "Commercial crude oil inventories increased by 2.0 million barrels to 411.7 million barrels "
+            "in the week ending July 17, 2026."
+        ),
+        "https://example-energy-news.com/crude-change-and-level",
+    )
+    assert news_feeds._parse_brave_calendar_actual(change_and_level, crude_candidate) == "2.0M"
+
+    forecast_only = _result(
+        "Crude oil inventories release - July 22, 2026",
+        "Commercial crude oil inventories forecast was -2.0 million barrels for the week ending July 17, 2026.",
+        "https://example-energy-news.com/crude-forecast",
+    )
+    assert news_feeds._parse_brave_calendar_actual(forecast_only, crude_candidate) == ""
+
+    previous_only = _result(
+        "Crude oil inventories release - July 22, 2026",
+        "Commercial crude oil inventories previous was -1.7 million barrels for the week ending July 10, 2026.",
+        "https://example-energy-news.com/crude-previous",
+    )
+    assert news_feeds._parse_brave_calendar_actual(previous_only, crude_candidate) == ""
+
+    preview_crude = _result(
+        "Crude oil inventories preview - July 22, 2026",
+        "Commercial crude oil inventories increased by 2.0 million barrels in the week ending July 17, 2026.",
+        "https://example-energy-news.com/crude-preview",
+    )
+    assert news_feeds._parse_brave_calendar_actual(preview_crude, crude_candidate) == ""
+
+    wrong_unit_crude = _result(
+        "Crude oil inventories release - July 22, 2026",
+        "Commercial crude oil inventories increased 2.0% in the week ending July 17, 2026.",
+        "https://example-energy-news.com/crude-percent",
+    )
+    assert news_feeds._parse_brave_calendar_actual(wrong_unit_crude, crude_candidate) == ""
 
 
 def main() -> None:
@@ -279,11 +415,98 @@ def main() -> None:
 
         _parser_cases()
 
+        cache_config = _config(root / "cache-version")
+        cache_candidate = {
+            "event": "Crude Oil Inventories",
+            "date": "2026-07-22",
+            "forecast": "-2.0M",
+            "previous": "-1.7M",
+        }
+        old_v1_key = (
+            f"{cache_config['api_key_fingerprint']}:2026-07-22:crude oil inventories"
+        )
+        Path(cache_config["state_path"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(cache_config["state_path"]).write_text(json.dumps({
+            "version": 1,
+            "usage": {},
+            "cache": {
+                old_v1_key: {
+                    "queried_at_utc": "2026-07-22T23:00:00+00:00",
+                    "actual": "",
+                }
+            },
+        }))
+        cache_now = datetime(2026, 7, 22, 23, 30, tzinfo=ZoneInfo("UTC"))
+        assert news_feeds._calendar_actuals_cached_value(
+            cache_config,
+            cache_candidate,
+            now_utc=cache_now,
+        ) == (False, "")
+        cache_payload = _result(
+            "Crude oil inventories release - July 22, 2026",
+            "Commercial crude oil inventories increased by 2.0 million barrels in the week ending July 17, 2026.",
+            "https://example-energy-news.com/crude-actual",
+        )
+        news_feeds._calendar_actuals_store_cache(
+            cache_config,
+            cache_candidate,
+            "2.0M",
+            cache_payload,
+            now_utc=cache_now,
+        )
+        stored_state = json.loads(Path(cache_config["state_path"]).read_text())
+        assert stored_state["version"] == news_feeds.CALENDAR_ACTUALS_PARSER_VERSION
+        new_key = news_feeds._calendar_actuals_cache_key(cache_config, cache_candidate)
+        assert new_key.startswith(f"v{news_feeds.CALENDAR_ACTUALS_PARSER_VERSION}:")
+        assert stored_state["cache"][new_key]["parser_version"] == news_feeds.CALENDAR_ACTUALS_PARSER_VERSION
+        assert stored_state["cache"][new_key]["sources"] == [{
+            "title": "Crude oil inventories release - July 22, 2026",
+            "url": "https://example-energy-news.com/crude-actual",
+        }]
+        assert news_feeds._calendar_actuals_cached_value(
+            cache_config,
+            cache_candidate,
+            now_utc=cache_now,
+        ) == (True, "2.0M")
+
         first_process_config = _config(root / "persistent", max_requests_per_day=1)
         second_process_config = _config(root / "persistent", max_requests_per_day=1)
         quota_now = datetime(2099, 1, 2, tzinfo=ZoneInfo("UTC"))
         assert news_feeds._calendar_actuals_reserve_request(first_process_config, now_utc=quota_now)
         assert not news_feeds._calendar_actuals_reserve_request(second_process_config, now_utc=quota_now)
+
+        class SuccessfulResponse:
+            status_code = 200
+            text = "{}"
+            headers = {}
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"web": {"results": []}}
+
+        successful_config = _config(root / "successful")
+        request_kwargs: dict = {}
+
+        def successful_get(*args, **kwargs):
+            request_kwargs.update(kwargs)
+            return SuccessfulResponse()
+
+        original_get = news_feeds.requests.get
+        news_feeds.requests.get = successful_get
+        try:
+            successful_payload = news_feeds._call_brave_calendar_actual(
+                successful_config,
+                {"event": "Crude Oil Inventories", "date": "2026-07-22"},
+            )
+        finally:
+            news_feeds.requests.get = original_get
+        assert request_kwargs["params"]["freshness"] == "2026-07-22to2026-07-22"
+        assert successful_payload["_qqq_search_context"] == {
+            "target_date": "2026-07-22",
+            "freshness": "2026-07-22to2026-07-22",
+        }
 
         class QuotaResponse:
             status_code = 429

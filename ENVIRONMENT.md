@@ -27,13 +27,13 @@ The daily news pipeline stores concise Gemini-generated bullet summaries instead
 1. Copy `env.example/llm_summary.env.example` to `env/llm_summary.env` if the local file does not already exist.
 2. Put the real Google AI Studio / Gemini API key in `GEMINI_API_KEY=...` inside `env/llm_summary.env` only.
 3. Keep `LLM_SUMMARY_PROVIDER=gemini`.
-4. Keep `GEMINI_MODEL=gemini-flash-latest` for the cheap/fast Gemini Flash alias, or change it to another Gemini model such as `gemini-3-flash-preview`.
+4. Keep production pinned to `GEMINI_MODEL=gemini-2.5-flash`. Avoid mutable `*-latest` aliases because Google may hot-swap them to a different model without changing the alias.
 5. Keep `FINANCIALJUICE_FEED_ENABLED=1` if you want Gemini to include same-day FinancialJuice breaking-news RSS items in addition to Finnhub candidates.
 6. Set `LLM_SUMMARY_ENABLED=1` when you want the Tuesday/nightly cron refresh to use Gemini summaries.
 7. Gemini is used only for news summarization; macro-calendar actual lookup is configured separately through Brave Search.
 8. Do not commit files under `env/`.
 
-The implementation calls Gemini's REST `generateContent` endpoint and the public FinancialJuice RSS feed with `requests`, so no extra Python SDK dependency is required. Gemini is requested with JSON mode plus a response schema; `LLM_SUMMARY_MAX_OUTPUT_TOKENS` controls how much room the model has to close the returned JSON, and `LLM_SUMMARY_THINKING_BUDGET=0` keeps hidden thinking from consuming that output budget.
+The implementation calls Gemini's REST `generateContent` endpoint and the public FinancialJuice RSS feed with `requests`, so no extra Python SDK dependency is required. Gemini is requested with JSON mode plus a response schema; `LLM_SUMMARY_MAX_OUTPUT_TOKENS` controls how much room the model has to close the returned JSON. For the compatible Gemini 2.5 Flash family, `LLM_SUMMARY_THINKING_BUDGET=0` disables thinking so visible JSON keeps the output budget. Unknown and mutable `*-latest` models omit `thinkingConfig` rather than receiving a potentially incompatible field.
 
 If Gemini fails for a date that already has summary rows, cron preserves those existing summaries. If there is no usable summary, cron stores the top scored related-news headlines as `News Summary`-compatible fallback rows so the website still has market news. Raw provider responses are only kept briefly in ignored local `data/news_request_cache.csv`; `NEWS_REQUEST_CACHE_TTL_DAYS` controls that cache's retention window.
 
@@ -49,7 +49,7 @@ Macro-calendar actual lookup uses Brave Web Search and deterministic snippet par
 6. Keep the positive and negative cache TTLs conservative so manual reruns do not repeat paid searches unnecessarily.
 7. Do not commit files under `env/`.
 
-When enabled, actual lookup runs only for the current or future target date, waits `LLM_CALENDAR_ACTUALS_DELAY_MINUTES` after the scheduled event time, and keeps `Actual` blank unless dated official snippets or multiple dated allowlisted sources provide a confidently parsed released value. Forecast and previous values are deliberately excluded from the search query. The flow does not backfill previous days. Ignored `data/calendar_actuals_search_state.json` stores daily request counts, cached positive/negative outcomes, and lightweight source provenance. After an HTTP 429, the provider/key-specific backoff marker also honors Brave's `Retry-After` header.
+When enabled, actual lookup runs only for the current or future target date, waits `LLM_CALENDAR_ACTUALS_DELAY_MINUTES` after the scheduled event time, and scopes Brave results to the exact target release day. Acceptance requires exact release-date evidence, strong event relevance, a matching weekly/monthly reference period when one is stated, clear release language, the correct unit type, and a valid actual value. Forecast, previous, stale-period, preview, and conflicting values are rejected. A single fresh result may qualify regardless of domain; source reputation is only a confidence boost. Evidence may also be combined across fresh results, such as a dated EIA release result plus a separate target-day result containing the actual value. Forecast and previous values remain excluded from the search query. The flow does not backfill previous days. Ignored `data/calendar_actuals_search_state.json` stores daily request counts, versioned positive/negative outcomes, and source titles/URLs for auditing. Parser-versioned cache keys prevent old negative results from suppressing corrected parsing. After an HTTP 429, the provider/key-specific backoff marker also honors Brave's `Retry-After` header.
 
 After migrating, the old ignored `env/calendar_actuals.env` Gemini credential is no longer loaded or required. Delete that local file and revoke its separate Gemini key if it will not be used elsewhere.
 

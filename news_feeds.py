@@ -46,7 +46,7 @@ MAX_MACRO_PER_DAY = 5  # Limit deterministic macro/calendar rows per day before 
 MAX_NEWS_PER_DAY = 2  # Cap heuristic fallback headlines when Gemini summaries are temporarily unavailable.
 DEFAULT_REQUEST_CACHE_TTL_DAYS = 7  # Keep raw provider responses only briefly in the ignored local cache.
 GEMINI_API_BASE_DEFAULT = "https://generativelanguage.googleapis.com/v1beta"  # Gemini Developer API REST base URL used by the no-SDK integration.
-GEMINI_MODEL_DEFAULT = "gemini-flash-latest"  # Cheap/fast Gemini model alias from Google's REST quickstart, overridable in env.
+GEMINI_MODEL_DEFAULT = "gemini-2.5-flash"  # Stable low-latency Gemini model; avoid mutable *-latest aliases in unattended cron.
 DEFAULT_LLM_SUMMARY_MAX_CANDIDATE_ITEMS = 80  # Let Gemini see Finnhub plus same-day FinancialJuice items while keeping prompt size bounded.
 DEFAULT_LLM_SUMMARY_MAX_BULLETS = 7  # Keep the website daily brief concise after summarization.
 DEFAULT_LLM_SUMMARY_TIMEOUT_SECONDS = 45  # Prevent cron jobs from hanging indefinitely on a model request.
@@ -65,6 +65,7 @@ DEFAULT_BRAVE_SEARCH_MAX_REQUESTS_PER_DAY = 3  # Keep paid/search-credit use bou
 DEFAULT_BRAVE_SEARCH_CACHE_TTL_HOURS = 168  # Reuse confident actuals for a week without another paid search.
 DEFAULT_BRAVE_SEARCH_NEGATIVE_CACHE_TTL_HOURS = 6  # Avoid tight retry loops while still allowing later same-day recovery.
 DEFAULT_CALENDAR_ACTUALS_QUOTA_BACKOFF_HOURS = 12  # After a 429, skip actual lookups long enough to avoid repeated quota failures.
+CALENDAR_ACTUALS_PARSER_VERSION = 3  # Bump when acceptance semantics change so stale negative cache entries cannot suppress fixes.
 BRAVE_OFFICIAL_SOURCE_DOMAINS = (
     "bls.gov",
     "census.gov",
@@ -724,37 +725,54 @@ def _sanitize_summary_rows(rows: list[Any], trade_date: datetime.date, max_bulle
     return sanitized  # Return validated rows, possibly empty to trigger fallback.
 
 
+def _gemini_model_supports_thinking_budget(model: Any) -> bool:
+    """Return True only for known Gemini 2.5 Flash-family text models that support thinkingBudget=0."""
+    model_name = _clean_text(model).lower().removeprefix("models/")
+    return re.fullmatch(
+        r"gemini-2\.5-flash(?:-lite)?(?:-\d{3}|-preview-\d{2}-\d{2})?",
+        model_name,
+    ) is not None
+
+
+def _build_gemini_summary_request_body(config: dict[str, Any], prompt: str) -> dict[str, Any]:
+    """Build a structured-output Gemini body without sending model-incompatible thinking fields."""
+    generation_config: dict[str, Any] = {
+        "temperature": config["temperature"],
+        "responseMimeType": "application/json",
+        "responseSchema": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "time": {"type": "STRING"},
+                    "event": {"type": "STRING"},
+                    "impact": {"type": "STRING"},
+                    "priority": {"type": "INTEGER"},
+                },
+                "required": ["time", "event", "impact", "priority"],
+            },
+        },
+        "maxOutputTokens": config["max_output_tokens"],
+    }
+    if _gemini_model_supports_thinking_budget(config.get("model")):
+        generation_config["thinkingConfig"] = {
+            "thinkingBudget": int(config.get("thinking_budget", DEFAULT_LLM_SUMMARY_THINKING_BUDGET))
+        }
+    return {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": generation_config,
+    }
+
+
 def _call_gemini_summary(config: dict[str, Any], prompt: str) -> str:
     """Call Gemini generateContent through REST using requests and an API key header."""  # Avoids adding a google-genai SDK dependency.
     model = _clean_text(config["model"])  # Read the configured Gemini model name.
     model_path = model if model.startswith("models/") else f"models/{model}"  # Accept either raw or full model path.
     url = f"{config['api_base']}/{model_path}:generateContent"  # Build the REST endpoint from Google's quickstart format.
-    request_body = {  # Build the Gemini generateContent JSON body.
-        "contents": [{"parts": [{"text": prompt}]}],  # Send the prompt as one text part.
-        "generationConfig": {  # Configure low-cost deterministic JSON output.
-            "temperature": config["temperature"],  # Keep wording stable.
-            "responseMimeType": "application/json",  # Ask Gemini for a JSON response body.
-            "responseSchema": {  # Ask Gemini to produce a bounded JSON array instead of free-form JSON text.
-                "type": "ARRAY",  # The top-level response should be the list consumed by _parse_json_array_from_text.
-                "items": {  # Each summary bullet is one object.
-                    "type": "OBJECT",  # Summary rows are JSON objects.
-                    "properties": {  # Define only the fields the dashboard sanitizer understands.
-                        "time": {"type": "STRING"},  # HH:MM Eastern display time.
-                        "event": {"type": "STRING"},  # Concise summary sentence.
-                        "impact": {"type": "STRING"},  # Usually "News Summary".
-                        "priority": {"type": "INTEGER"},  # 1-10 sorting hint.
-                    },  # End summary-row properties.
-                    "required": ["time", "event", "impact", "priority"],  # Reject incomplete objects at generation time when possible.
-                },  # End array item schema.
-            },  # End response schema.
-            "maxOutputTokens": config["max_output_tokens"],  # Give Gemini enough room to close valid JSON.
-            "thinkingConfig": {"thinkingBudget": config["thinking_budget"]},  # Prevent hidden thinking from consuming the JSON output budget.
-        },  # End generation config.
-    }  # End request body.
     response = requests.post(  # Make the HTTPS request.
         url,  # Gemini model endpoint.
         headers={"Content-Type": "application/json", "x-goog-api-key": config["api_key"]},  # Authenticate without putting the key in the URL.
-        json=request_body,  # Let requests serialize JSON safely.
+        json=_build_gemini_summary_request_body(config, prompt),  # Let requests serialize the model-aware JSON body safely.
         timeout=config["timeout"],  # Bound the network wait time for cron.
     )  # End HTTP request.
     response.raise_for_status()  # Raise on 4xx/5xx so caller can fall back.
@@ -851,7 +869,7 @@ def _record_calendar_actuals_quota_backoff(config: dict[str, Any], response: req
 def _calendar_actuals_cache_key(config: dict[str, Any], candidate: dict[str, Any]) -> str:
     fingerprint = _clean_text(config.get("api_key_fingerprint"))
     event = _normalize_calendar_event_key(candidate.get("event"))
-    return f"{fingerprint}:{candidate.get('date')}:{event}"
+    return f"v{CALENDAR_ACTUALS_PARSER_VERSION}:{fingerprint}:{candidate.get('date')}:{event}"
 
 
 def _calendar_actuals_cached_value(
@@ -900,7 +918,7 @@ def _calendar_actuals_reserve_request(config: dict[str, Any], now_utc: datetime 
         if key.rsplit(":", 1)[-1] >= cutoff
     }
     state.setdefault("cache", {})
-    state["version"] = 1
+    state["version"] = CALENDAR_ACTUALS_PARSER_VERSION
     _write_json_object_atomic(state_path, state)
     return True
 
@@ -918,7 +936,8 @@ def _calendar_actuals_store_cache(
     cache = state.setdefault("cache", {})
     results = ((payload.get("web") or {}).get("results") or [])
     sources = []
-    for result in results[:5] if isinstance(results, list) else []:
+    source_limit = int(config.get("result_count", DEFAULT_BRAVE_SEARCH_RESULT_COUNT) or DEFAULT_BRAVE_SEARCH_RESULT_COUNT)
+    for result in results[:source_limit] if isinstance(results, list) else []:
         if not isinstance(result, dict):
             continue
         sources.append({
@@ -929,9 +948,10 @@ def _calendar_actuals_store_cache(
         "queried_at_utc": (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
         "actual": _usable_actual_value(actual),
         "query": _build_brave_calendar_actual_query(candidate),
+        "parser_version": CALENDAR_ACTUALS_PARSER_VERSION,
         "sources": sources,
     }
-    state["version"] = 1
+    state["version"] = CALENDAR_ACTUALS_PARSER_VERSION
     state.setdefault("usage", {})
     _write_json_object_atomic(state_path, state)
 
@@ -1053,6 +1073,8 @@ def _call_brave_calendar_actual(config: dict[str, Any], candidate: dict[str, Any
         raise BraveSearchAuthError("Refusing to send the Brave token over a non-HTTPS API URL")
     if not config.get("allow_custom_api_url") and parsed_url.hostname != "api.search.brave.com":
         raise BraveSearchAuthError("Refusing to send the Brave token to a non-Brave API URL")
+    target_date = pd.Timestamp(candidate.get("date")).date().isoformat()
+    freshness = f"{target_date}to{target_date}"
     params = {
         "q": _build_brave_calendar_actual_query(candidate),
         "count": config["result_count"],
@@ -1061,6 +1083,7 @@ def _call_brave_calendar_actual(config: dict[str, Any], candidate: dict[str, Any
         "ui_lang": config["ui_lang"],
         "safesearch": config["safesearch"],
         "extra_snippets": str(bool(config["extra_snippets"])).lower(),
+        "freshness": freshness,
     }
     response = requests.get(
         config["api_url"],
@@ -1085,6 +1108,10 @@ def _call_brave_calendar_actual(config: dict[str, Any], candidate: dict[str, Any
     payload = response.json()
     if not isinstance(payload, dict):
         raise RuntimeError("Brave Search returned a non-object JSON response")
+    payload["_qqq_search_context"] = {
+        "target_date": target_date,
+        "freshness": freshness,
+    }
     return payload
 
 
@@ -1116,6 +1143,37 @@ def _calendar_event_reports_change(event: Any) -> bool:
         "storage",
         "balance",
     ))
+
+
+def _align_calendar_actual_precision(value: str, candidate: dict[str, Any]) -> str:
+    """Round excess provider precision to the calendar's forecast/previous display precision."""
+    match = re.fullmatch(r"([-+]?\d+(?:\.\d+)?)([%KMBT]?)", _clean_text(value).upper())
+    if not match:
+        return value
+    number_text, suffix = match.groups()
+    reference_precisions: list[int] = []
+    for reference in (candidate.get("forecast"), candidate.get("previous")):
+        reference_match = re.fullmatch(r"[-+]?\d+(?:\.(\d+))?([%KMBT]?)", _clean_text(reference).upper())
+        if not reference_match or reference_match.group(2) != suffix:
+            continue
+        reference_precisions.append(len(reference_match.group(1) or ""))
+    if not reference_precisions:
+        return value
+    original_precision = len(number_text.partition(".")[2]) if "." in number_text else 0
+    precision = min(original_precision, max(reference_precisions))
+    numeric = float(number_text)
+    if abs(numeric) < 0.5 * (10 ** (-precision)):
+        numeric = 0.0
+    return f"{numeric:.{precision}f}{suffix}"
+
+
+def _calendar_actual_equivalence_key(value: str) -> str:
+    """Group numerically equivalent values such as 2M and 2.0M without changing display text."""
+    match = re.fullmatch(r"([-+]?\d+(?:\.\d+)?)([%KMBT]?)", _clean_text(value).upper())
+    if not match:
+        return _clean_text(value).upper()
+    numeric, suffix = match.groups()
+    return f"{suffix}:{float(numeric):.12g}"
 
 
 def _calendar_value_pattern() -> str:
@@ -1189,36 +1247,84 @@ def _brave_source_score(url: Any) -> tuple[int, str]:
     return 0, hostname
 
 
-def _brave_result_has_release_date(
-    result: dict[str, Any],
-    candidate: dict[str, Any],
-) -> bool:
-    """Require exact release-date evidence, with a monthly official-source exception."""
+def _text_contains_calendar_date(text: Any, target_date: date_cls) -> bool:
+    """Return True when text contains the exact target calendar date in a common US/ISO form."""
+    haystack = _html_to_plain_text(_clean_text(text)).lower()
+    month_name = target_date.strftime("%B").lower()
+    month_abbr = target_date.strftime("%b").lower()
+    exact_forms = (
+        target_date.isoformat(),
+        f"{month_name} {target_date.day}, {target_date.year}",
+        f"{month_name} {target_date.day} {target_date.year}",
+        f"{month_abbr} {target_date.day}, {target_date.year}",
+        f"{target_date.month}/{target_date.day}/{target_date.year}",
+        f"{target_date.month:02d}/{target_date.day:02d}/{target_date.year}",
+    )
+    if any(form in haystack for form in exact_forms):
+        return True
+    date_pattern = rf"\b(?:{month_name}|{month_abbr})\s+{target_date.day}(?:st|nd|rd|th)?,?\s+{target_date.year}\b"
+    return re.search(date_pattern, haystack) is not None
+
+
+def _brave_result_has_release_date(result: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    """Return True when the result text or URL contains the exact target release date."""
     trade_date = pd.Timestamp(candidate.get("date")).date()
     text_parts = [result.get("title"), result.get("description"), unquote(_clean_text(result.get("url")))]
     extra_snippets = result.get("extra_snippets") or []
     if isinstance(extra_snippets, list):
         text_parts.extend(extra_snippets)
-    haystack = _html_to_plain_text(" ".join(_clean_text(part) for part in text_parts if _clean_text(part))).lower()
-    month_name = trade_date.strftime("%B").lower()
-    month_abbr = trade_date.strftime("%b").lower()
-    exact_forms = (
-        trade_date.isoformat(),
-        f"{month_name} {trade_date.day}, {trade_date.year}",
-        f"{month_name} {trade_date.day} {trade_date.year}",
-        f"{month_abbr} {trade_date.day}, {trade_date.year}",
-        f"{trade_date.month}/{trade_date.day}/{trade_date.year}",
-        f"{trade_date.month:02d}/{trade_date.day:02d}/{trade_date.year}",
+    return _text_contains_calendar_date(" ".join(_clean_text(part) for part in text_parts if _clean_text(part)), trade_date)
+
+
+def _brave_result_has_target_age(result: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    """Return True when Brave's result-age metadata identifies the target release date."""
+    trade_date = pd.Timestamp(candidate.get("date")).date()
+    return any(
+        _text_contains_calendar_date(result.get(field), trade_date)
+        for field in ("age", "page_age", "published", "published_at")
     )
-    if any(form in haystack for form in exact_forms):
-        return True
-    date_pattern = rf"\b(?:{month_name}|{month_abbr})\s+{trade_date.day}(?:st|nd|rd|th)?,?\s+{trade_date.year}\b"
-    return re.search(date_pattern, haystack) is not None
+
+
+def _brave_payload_is_target_date_scoped(payload: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    """Return True when the request used Brave's exact target-day freshness filter."""
+    context = payload.get("_qqq_search_context") or {}
+    target_date = pd.Timestamp(candidate.get("date")).date().isoformat()
+    return (
+        _clean_text(context.get("target_date")) == target_date
+        and _clean_text(context.get("freshness")) == f"{target_date}to{target_date}"
+    )
 
 
 def _calendar_context_matches_reference_period(candidate: dict[str, Any], context: str) -> bool:
-    """Reject explicitly stale monthly periods while allowing snippets that omit a reference month."""
+    """Reject explicitly stale weekly/monthly periods while allowing snippets that omit the period."""
     event = _clean_text(candidate.get("event")).lower()
+    trade_date = pd.Timestamp(candidate.get("date")).date()
+    weekly_reference_weekday: int | None = None
+    if any(name in event for name in ("crude oil inventories", "natural gas storage")):
+        weekly_reference_weekday = 4  # EIA petroleum/natural-gas reports reference the preceding Friday.
+    elif "unemployment claims" in event:
+        weekly_reference_weekday = 5  # Initial claims reference the preceding Saturday.
+    if weekly_reference_weekday is not None:
+        days_back = (trade_date.weekday() - weekly_reference_weekday) % 7 or 7
+        expected_week_end = trade_date - timedelta(days=days_back)
+        week_end_matches = re.findall(
+            r"\bweek\s+(?:ending|ended)\s+(?:on\s+)?((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:,?\s+\d{4})?|\d{1,2}/\d{1,2}(?:/\d{2,4})?)",
+            context,
+            flags=re.IGNORECASE,
+        )
+        parsed_week_ends: set[date_cls] = set()
+        for raw_date in week_end_matches:
+            value = raw_date if re.search(r"\b\d{4}\b", raw_date) else f"{raw_date}, {expected_week_end.year}"
+            try:
+                parsed_week_ends.add(pd.Timestamp(value).date())
+            except Exception:
+                continue
+        if parsed_week_ends and expected_week_end not in parsed_week_ends:
+            return False
+        if not parsed_week_ends and any(name in event for name in ("crude oil inventories", "natural gas storage")):
+            if re.search(r"\b(?:last|previous|prior|this|latest)\s+week\b", context):
+                return False
+
     monthly_events = (
         "retail sales",
         "industrial production",
@@ -1232,7 +1338,6 @@ def _calendar_context_matches_reference_period(candidate: dict[str, Any], contex
     )
     if "m/m" not in event and "y/y" not in event and not any(name in event for name in monthly_events):
         return True
-    trade_date = pd.Timestamp(candidate.get("date")).date()
     expected_month = (trade_date.replace(day=1) - timedelta(days=1)).strftime("%B").lower()
     release_month = trade_date.strftime("%B").lower()
     month_names = {
@@ -1258,6 +1363,21 @@ def _event_terms_present(event: Any, text: str) -> bool:
             "sales of new single-family houses",
             "sales of new single family houses",
         ))
+    if "crude oil inventories" in normalized_event:
+        return any(phrase in lowered for phrase in (
+            "crude oil inventories",
+            "commercial crude oil inventories",
+            "crude inventories",
+            "crude stocks",
+            "crude oil stocks",
+            "weekly petroleum status report",
+        ))
+    if "natural gas storage" in normalized_event:
+        return any(phrase in lowered for phrase in (
+            "natural gas storage",
+            "working gas in storage",
+            "natural gas inventories",
+        ))
     stop_words = {"actual", "change", "index", "united", "states", "weekly", "flash", "final"}
     short_terms = {"cpi", "ppi", "gdp", "pmi", "pce", "adp", "ism", "uom", "nahb"}
     terms = {
@@ -1278,11 +1398,16 @@ def _calendar_match_context_is_relevant(candidate: dict[str, Any], text: str, st
     right_boundaries = [position for separator in (".", ";", "\n") if (position := text.find(separator, end)) != -1]
     sentence_end = min(right_boundaries) if right_boundaries else len(text)
     context = text[sentence_start:sentence_end].lower()
-    if re.search(r"\b(?:forecast|forecasted|expected|consensus|estimate|estimated|projected|projection|outlook|preview)\b", context):
+    if re.search(r"\b(?:preview|outlook|projection|projected)\b", context):
         return False
     if not _calendar_context_matches_reference_period(candidate, context):
         return False
     event = _clean_text(candidate.get("event")).lower()
+    if "crude oil inventories" in event and (
+        "american petroleum institute" in context
+        or (re.search(r"\bapi\b", context) and re.search(r"\b(?:day earlier|day before)\b", context))
+    ):
+        return False
     if "unemployment claims" in event:
         if any(term in context for term in (
             "continuing claims",
@@ -1352,7 +1477,12 @@ def _extract_brave_snippet_candidates(
     for pattern, pattern_score in patterns:
         for match in pattern.finditer(text):
             prefix = text[max(0, match.start() - 60):match.start()].lower()
-            if re.search(r"\b(?:forecast|expected|consensus|estimate|estimated|previous|prior|projected)\b[^.;]{0,45}$", prefix):
+            suffix = text[match.end():match.end() + 80].lower()
+            if re.search(r"\b(?:forecast|forecasted|expected|consensus|estimate|estimated|previous|prior|projected)\b[^.;]{0,45}$", prefix):
+                continue
+            if re.match(r"\s*(?:as\s+)?(?:the\s+)?(?:forecast|expected|consensus|estimate|previous|prior)\b", suffix):
+                continue
+            if re.search(r"\b(?:in|for|during)\s+(?:our\s+|the\s+)?(?:forecast|outlook|preview|projection|previous|prior|last)\s*(?:week|month|quarter|period|release)?\b", suffix):
                 continue
             if not _calendar_match_context_is_relevant(candidate, text, match.start(), match.end()):
                 continue
@@ -1360,7 +1490,8 @@ def _extract_brave_snippet_candidates(
             connector = _clean_text(match.groupdict().get("connector"))
             raw_value = match.group("value")
             to_value = _clean_text(match.groupdict().get("to_value"))
-            if to_value:
+            use_change_value = bool(to_value) and _calendar_event_reports_change(candidate.get("event"))
+            if to_value and not use_change_value:
                 normalized_to = _normalize_brave_actual_value(
                     to_value,
                     expected_kind,
@@ -1386,22 +1517,21 @@ def _extract_brave_snippet_candidates(
 
 
 def _parse_brave_calendar_actual(payload: dict[str, Any], candidate: dict[str, Any]) -> str:
-    """Return a conservatively selected Actual from Brave result snippets without using an LLM."""
+    """Select an Actual from fresh, event-relevant Brave evidence without a domain allowlist gate."""
     results = ((payload.get("web") or {}).get("results") or [])
     if not isinstance(results, list):
         return ""
 
-    candidates_by_value: dict[str, dict[str, Any]] = {}
+    target_day_scoped = _brave_payload_is_target_date_scoped(payload, candidate)
+    result_facts: list[dict[str, Any]] = []
     for rank, result in enumerate(results, start=1):
         if not isinstance(result, dict):
             continue
-        source_score, hostname = _brave_source_score(result.get("url"))
-        if source_score <= 0:
+        result_url = _clean_text(result.get("url"))
+        if urlparse(result_url).scheme.lower() != "https":
             continue
         title = _clean_text(result.get("title"))
         if re.search(r"\b(?:forecast|outlook|preview|expectations?|projections?)\b", title.lower()):
-            continue
-        if not _brave_result_has_release_date(result, candidate):
             continue
         text_parts = [title, result.get("description")]
         extra_snippets = result.get("extra_snippets") or []
@@ -1410,46 +1540,56 @@ def _parse_brave_calendar_actual(payload: dict[str, Any], candidate: dict[str, A
         text = _html_to_plain_text(" ".join(_clean_text(part) for part in text_parts if _clean_text(part)))
         if not text or not _event_terms_present(candidate.get("event"), text):
             continue
-        rank_bonus = 1 if rank <= 3 else 0
-        for value, extraction_score in _extract_brave_snippet_candidates(text, candidate, source_score + rank_bonus):
-            record = candidates_by_value.setdefault(value, {
+        source_score, hostname = _brave_source_score(result_url)
+        result_facts.append({
+            "rank": rank,
+            "text": text,
+            "hostname": hostname,
+            "source_score": source_score,
+            "has_release_date": _brave_result_has_release_date(result, candidate),
+            "has_target_age": _brave_result_has_target_age(result, candidate),
+        })
+
+    has_dated_event_evidence = any(
+        fact["has_release_date"] or fact["has_target_age"]
+        for fact in result_facts
+    )
+    if not has_dated_event_evidence:
+        return ""
+
+    candidates_by_value: dict[str, dict[str, Any]] = {}
+    for fact in result_facts:
+        is_fresh = fact["has_release_date"] or fact["has_target_age"] or target_day_scoped
+        if not is_fresh:
+            continue
+        rank_bonus = 1 if fact["rank"] <= 3 else 0
+        for value, release_score in _extract_brave_snippet_candidates(fact["text"], candidate, 0):
+            if release_score < 5:
+                continue
+            value = _align_calendar_actual_precision(value, candidate)
+            value_key = _calendar_actual_equivalence_key(value)
+            confidence_score = release_score + fact["source_score"] + rank_bonus + (2 if fact["has_release_date"] else 1)
+            record = candidates_by_value.setdefault(value_key, {
+                "value": value,
                 "score": 0,
                 "domains": set(),
-                "trusted_domains": set(),
-                "press_release": False,
-                "official": False,
-                "rank": rank,
+                "rank": fact["rank"],
+                "evidence_count": 0,
             })
-            record["score"] = max(record["score"], extraction_score)
-            record["rank"] = min(record["rank"], rank)
-            if hostname:
-                record["domains"].add(hostname)
-                if source_score == 1:
-                    record["trusted_domains"].add(hostname)
-            if source_score == 2:
-                record["press_release"] = True
-            if source_score >= 3:
-                record["official"] = True
+            if confidence_score > record["score"]:
+                record["value"] = value
+            record["score"] = max(record["score"], confidence_score)
+            record["rank"] = min(record["rank"], fact["rank"])
+            record["evidence_count"] += 1
+            if fact["hostname"]:
+                record["domains"].add(fact["hostname"])
 
-    if not candidates_by_value:
+    if len(candidates_by_value) != 1:
         return ""
-    ranked = sorted(
-        candidates_by_value.items(),
-        key=lambda item: (
-            item[1]["score"] + min(len(item[1]["domains"]) - 1, 2),
-            len(item[1]["domains"]),
-            -item[1]["rank"],
-        ),
-        reverse=True,
-    )
-    value, evidence = ranked[0]
-    if evidence["official"] and evidence["score"] >= 7:
-        return value
-    if evidence["press_release"] and evidence["score"] >= 8:
-        return value
-    if len(evidence["trusted_domains"]) >= 2 and evidence["score"] >= 7:
-        return value
-    return ""
+    _, evidence = next(iter(candidates_by_value.items()))
+    if evidence["evidence_count"] < 1:
+        return ""
+    return evidence["value"]
 
 
 def _coerce_eastern_timestamp(value: datetime | pd.Timestamp | None) -> pd.Timestamp:
