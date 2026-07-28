@@ -341,6 +341,56 @@ def load_intraday(force_refresh: bool = False) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # ↑ The functions below handle daily (end-of-day) price bars — used for prior_day_return features.
 
+DAILY_RETRY_LOOKBACK_DAYS = 10
+
+
+def _prepare_daily_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize one Yahoo/cache daily frame into the canonical OHLCV shape."""
+    df = df.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [col[0].lower() for col in df.columns]
+    else:
+        df.columns = [c.lower() for c in df.columns]
+
+    required = ["open", "high", "low", "close", "volume"]
+    missing = [column for column in required if column not in df.columns]
+    if missing:
+        raise RuntimeError(f"daily data missing required columns: {missing}")
+
+    df.index = _normalize_daily_index(df.index)
+    df.index.name = "date"
+    return df[required].sort_index()
+
+
+def _load_existing_daily_cache() -> pd.DataFrame:
+    """Load the current cache so a partial provider response cannot erase rows."""
+    if not DAILY_CSV.exists():
+        return pd.DataFrame()
+    cached = pd.read_csv(DAILY_CSV, index_col="date", parse_dates=False)
+    return _prepare_daily_frame(cached)
+
+
+def _recent_cached_dates_missing_from_refresh(
+    cached: pd.DataFrame,
+    fresh: pd.DataFrame,
+) -> list[str]:
+    """Return recent cached trading dates omitted by the latest Yahoo response."""
+    if cached.empty or fresh.empty:
+        return []
+    latest_fresh_date = fresh.index.max()
+    cutoff = latest_fresh_date - pd.Timedelta(days=DAILY_RETRY_LOOKBACK_DAYS)
+    recent_cached_dates = cached.index[(cached.index >= cutoff) & (cached.index <= latest_fresh_date)]
+    return [day.date().isoformat() for day in recent_cached_dates if day not in fresh.index]
+
+
+def _download_daily(symbol: str, period: str) -> pd.DataFrame:
+    """Download and normalize one Yahoo daily response."""
+    df = yf.download(symbol, period=period, interval="1d", progress=False)
+    if df.empty:
+        raise RuntimeError(f"yfinance returned empty DataFrame for {symbol} daily")
+    return _prepare_daily_frame(df)
+
+
 def fetch_daily(symbol: str = SYMBOL, period: str = "2y") -> pd.DataFrame:
 # ↑ Downloads daily OHLCV bars from Yahoo Finance and saves to CSV.
 #   Parameters:
@@ -353,42 +403,38 @@ def fetch_daily(symbol: str = SYMBOL, period: str = "2y") -> pd.DataFrame:
     print(f"[data_loader] Fetching {period} daily bars for {symbol}…")
     # ↑ Status message.
 
-    df = yf.download(symbol, period=period, interval="1d", progress=False)
-    # ↑ Downloads daily bars for the full 2-year period in one shot.
-    #   interval="1d" → daily bars (one row per trading day).
-    #   Daily data has no 30-day limit like 1-minute data — we can get 2 years at once.
+    cached = _load_existing_daily_cache()
+    fresh = _download_daily(symbol, period)
 
-    if df.empty:
-        # ↑ Checks if Yahoo returned an empty table (no data at all).
-        raise RuntimeError(f"yfinance returned empty DataFrame for {symbol} daily")
-        # ↑ Raise an error with a descriptive message if no data came back.
+    missing_recent_dates = _recent_cached_dates_missing_from_refresh(cached, fresh)
+    if missing_recent_dates:
+        print(
+            "[data_loader] Yahoo daily response omitted recent cached date(s): "
+            f"{', '.join(missing_recent_dates)}; retrying once"
+        )
+        try:
+            retry = _download_daily(symbol, period)
+        except Exception as exc:
+            print(f"[data_loader] Yahoo daily retry failed: {exc}; preserving existing cache rows")
+        else:
+            fresh = pd.concat([fresh, retry])
+            fresh = fresh[~fresh.index.duplicated(keep="last")].sort_index()
 
-    if isinstance(df.columns, pd.MultiIndex):
-        # ↑ Handle the multi-level column structure that newer yfinance versions sometimes return.
-        df.columns = [col[0].lower() for col in df.columns]
-        # ↑ Flatten and lowercase: ("Close", "QQQ") → "close".
-    else:
-        df.columns = [c.lower() for c in df.columns]
-        # ↑ Simple lowercase if columns are already flat.
+        still_missing = _recent_cached_dates_missing_from_refresh(cached, fresh)
+        if still_missing:
+            print(
+                "[data_loader] Yahoo retry still omitted recent cached date(s): "
+                f"{', '.join(still_missing)}; preserving existing cache rows"
+            )
 
-    # Daily bars from yfinance are trading-day labels, not intraday timestamps.
-    # Do NOT run them through _to_eastern(): that would treat naive midnight
-    # dates as UTC and shift them back to the prior calendar day in New York.
-    # Keep them as plain daily labels so prior-close lookups stay aligned.
-    df.index = _normalize_daily_index(df.index)
-    # ↑ Normalize daily labels through one helper so fresh downloads and restored legacy CSVs behave identically.
-
-    df.index.name = "date"
-    # ↑ Names the index "date" (daily bars only need a trading date label).
-
+    # Merge instead of replacing the cache. Fresh values win for matching dates,
+    # while a transient incomplete Yahoo response cannot delete known history.
+    df = pd.concat([cached, fresh]) if not cached.empty else fresh
+    df = df[~df.index.duplicated(keep="last")].sort_index()
     df.to_csv(DAILY_CSV)
-    # ↑ Saves to the daily CSV cache file.
 
     print(f"[data_loader] Saved {len(df):,} rows → {DAILY_CSV}")
-    # ↑ Prints confirmation with row count.
-
     return df
-    # ↑ Returns the daily DataFrame.
 
 
 def load_daily(force_refresh: bool = False) -> pd.DataFrame:
