@@ -13,6 +13,7 @@ compile: venv/bin/python
 	$(PYTHON) -m py_compile *.py scripts/*.py
 
 test: venv/bin/python
+	$(PYTHON) scripts/test_daily_refresh_merge.py
 	$(PYTHON) scripts/test_news_summary_fallback.py
 	$(PYTHON) scripts/test_gemini_summary_request.py
 	$(PYTHON) scripts/test_calendar_actual_enrichment.py
