@@ -583,6 +583,7 @@ def _news_event_record(score: int, dt: pd.Timestamp, item: dict[str, Any]) -> di
 
 def _related_news_fallback_records(
     scored_items: list[tuple[int, pd.Timestamp, dict[str, Any]]],
+    trade_date: date_cls,
     max_items: int,
 ) -> list[dict[str, Any]]:
     """Return top-scored related headlines in the summary-compatible event shape."""
@@ -592,8 +593,10 @@ def _related_news_fallback_records(
         if not headline:
             continue
         source = _clip_text(item.get("source"), 40)
+        local_time = dt.tz_convert("America/New_York").time().replace(tzinfo=None)
+        event_dt = pd.Timestamp(datetime.combine(trade_date, local_time), tz="America/New_York")
         fallback_records.append({
-            "DateTime": dt.tz_convert("America/New_York").isoformat(),
+            "DateTime": event_dt.isoformat(),
             "Currency": "USD",
             "Impact": "News Summary",
             "Event": f"Related news: {headline} [{source}]" if source else f"Related news: {headline}",
@@ -1867,7 +1870,7 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
             summary_records = existing_summary_records
 
         if not summary_records and attempted_summary and scored:
-            summary_records = _related_news_fallback_records(scored, max_items_per_day)
+            summary_records = _related_news_fallback_records(scored, day, max_items_per_day)
             if summary_records:
                 print(f"[news_feeds] Added {len(summary_records)} top related news fallback row(s) for {day}")
 
@@ -2240,7 +2243,12 @@ def save_combined_events(start_date: str, end_date: str, output_csv: Path | str 
     if df.empty:
         raise RuntimeError("Combined news/macro feed is empty")
     out = df[["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous"]].copy()
-    replace_dates = set(pd.to_datetime(out["DateTime"], utc=True).dt.tz_convert("America/New_York").dt.date)
+    requested_start = pd.Timestamp(start_date).date()
+    requested_end = pd.Timestamp(end_date).date()
+    replace_dates = {
+        requested_start + timedelta(days=offset)
+        for offset in range((requested_end - requested_start).days + 1)
+    }
     return _merge_event_archive(out, output_csv, replace_dates=replace_dates)
 
 
