@@ -7,6 +7,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 import sys
+import tempfile
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -37,21 +39,21 @@ def main() -> None:
             return []
         return [
             {
-                "datetime": _epoch("2099-01-02T10:00:00-05:00"),
+                "datetime": _epoch("2026-08-03T23:55:00-04:00"),
                 "headline": "Fed inflation data drives QQQ yields lower",
                 "summary": "Macro-sensitive Nasdaq story",
                 "source": "Reuters",
                 "related": "QQQ",
             },
             {
-                "datetime": _epoch("2099-01-02T10:05:00-05:00"),
+                "datetime": _epoch("2026-08-05T00:05:00-04:00"),
                 "headline": "Apple and Nvidia lead Nasdaq megacaps",
                 "summary": "Large technology stocks moved intraday",
                 "source": "TestWire",
                 "related": "AAPL,NVDA,QQQ",
             },
             {
-                "datetime": _epoch("2099-01-02T10:10:00-05:00"),
+                "datetime": _epoch("2026-08-05T00:10:00-04:00"),
                 "headline": "Low relevance local headline",
                 "summary": "No market terms",
                 "source": "TestWire",
@@ -70,7 +72,7 @@ def main() -> None:
             "temperature": 0.2,
             "max_output_tokens": 256,
             "thinking_budget": 0,
-            "summary_start_date": pd.Timestamp("2099-01-01").date(),
+            "summary_start_date": pd.Timestamp("2026-08-01").date(),
         }
 
     def fail_summary(scored_items: list, trade_date, config: dict) -> list[dict]:
@@ -85,10 +87,10 @@ def main() -> None:
     news_feeds._existing_news_summary_records_for_day = lambda trade_date: []
     try:
         frame = news_feeds.fetch_finnhub_news(
-            "2099-01-02",
-            "2099-01-02",
+            "2026-08-04",
+            "2026-08-04",
             max_items_per_day=2,
-            llm_summary_dates={pd.Timestamp("2099-01-02").date()},
+            llm_summary_dates={pd.Timestamp("2026-08-04").date()},
         )
     finally:
         news_feeds._load_request_cache = original_load_cache
@@ -103,9 +105,37 @@ def main() -> None:
     assert set(frame["Impact"]) == {"News Summary"}
     assert set(frame["Kind"]) == {"news_summary"}
     assert all(str(event).startswith("Related news:") for event in frame["Event"])
-    assert "Fed inflation data" in frame.iloc[0]["Event"]
-    assert "Apple and Nvidia" in frame.iloc[1]["Event"]
-    assert frame["DateTime"].dt.tz_convert(ZoneInfo("America/New_York")).dt.date.iloc[0].isoformat() == "2099-01-02"
+    fallback_events = " ".join(frame["Event"].astype(str))
+    assert "Fed inflation data" in fallback_events
+    assert "Apple and Nvidia" in fallback_events
+    assert "Low relevance local headline" not in fallback_events
+    fallback_dates = frame["DateTime"].dt.tz_convert(ZoneInfo("America/New_York")).dt.date
+    assert set(fallback_dates) == {pd.Timestamp("2026-08-04").date()}
+
+    archive_columns = ["DateTime", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous"]
+    archive = pd.DataFrame(
+        [
+            ["2026-08-03T09:30:00-04:00", "USD", "News Summary", "Keep Aug 3", "", "", ""],
+            ["2026-08-04T09:30:00-04:00", "USD", "News Summary", "Replace Aug 4", "", "", ""],
+        ],
+        columns=archive_columns,
+    )
+    cross_date_output = pd.DataFrame(
+        [["2026-08-03T23:55:00-04:00", "USD", "News Summary", "Cross-date fallback", "", "", ""]],
+        columns=archive_columns,
+    )
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output_csv = Path(temp_dir) / "ff_events.csv"
+        news_csv = Path(temp_dir) / "news.csv"
+        archive.to_csv(output_csv, index=False)
+        with (
+            patch.object(news_feeds, "NEWS_CSV", news_csv),
+            patch.object(news_feeds, "build_combined_events", return_value=cross_date_output),
+        ):
+            merged = news_feeds.save_combined_events("2026-08-04", "2026-08-04", output_csv=output_csv)
+
+    assert "Keep Aug 3" in set(merged["Event"]), "an Aug 4 refresh must not replace Aug 3"
+    assert "Replace Aug 4" not in set(merged["Event"]), "the explicitly requested date must be replaced"
     print("news summary fallback test passed")
 
 
