@@ -10,7 +10,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 # Run every later command from the project root so relative paths are predictable under cron.
 
-echo "[$(date --iso-8601=seconds)] Starting weekly calendar refresh in $REPO_DIR"
+echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] Starting weekly calendar refresh in $REPO_DIR"
 # Print a timestamped start marker so the cron log is easy to scan.
 
 mkdir -p logs data
@@ -18,7 +18,7 @@ mkdir -p logs data
 
 if [ ! -x venv/bin/python ]; then
 # Check that the project-local Python environment exists and has an executable Python.
-    echo "[$(date --iso-8601=seconds)] ERROR: venv missing; run scripts/setup_local_runtime.sh first"
+    echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] ERROR: venv missing; run scripts/setup_local_runtime.sh first"
 # Explain the exact setup command needed instead of failing with a vague Python error.
     exit 1
 # Stop because running without the project-local venv would risk using global Python packages.
@@ -55,7 +55,7 @@ PY
 EOF
 # Capture the Python-computed date range into two Bash variables.
 
-echo "[$(date --iso-8601=seconds)] Refreshing weekly USD calendar only: ${START_DATE} -> ${END_DATE}"
+echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] Refreshing weekly USD calendar only: ${START_DATE} -> ${END_DATE}"
 # Print the exact date window being refreshed.
 
 python3 - <<PY
@@ -72,7 +72,7 @@ SKIP_EXPORT_JSON="${SKIP_EXPORT_JSON:-0}"
 
 if [ "$SKIP_EXPORT_JSON" = "1" ]; then
 # Check whether a parent job asked this script to stop after refreshing calendar data.
-    echo "[$(date --iso-8601=seconds)] Weekly calendar refresh done; export skipped by SKIP_EXPORT_JSON=1"
+    echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] Weekly calendar refresh done; export skipped by SKIP_EXPORT_JSON=1"
 # Print a clear log line so Tuesday cron shows why this script did not deploy by itself.
     exit 0
 # Stop successfully because the parent Tuesday script will run the Finnhub refresh and final export next.
@@ -82,11 +82,11 @@ fi
 EXPORT_JSON_FLAGS="${EXPORT_JSON_FLAGS:-}"
 # Allow tests to pass --no-git through the environment while standalone cron uses the default commit/push behavior.
 
-echo "[$(date --iso-8601=seconds)] Exporting static dashboard data"
+echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] Exporting static dashboard data"
 # Print an export start marker before generating public/data JSON files.
 
 /usr/bin/env bash scripts/cron_export_static.sh
 # Generate static dashboard JSON from CSV by default, or from PostgreSQL only when QQQ_CRON_DATA_BACKEND=postgres.
 
-echo "[$(date --iso-8601=seconds)] Weekly calendar refresh done"
+echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] Weekly calendar refresh done"
 # Print a timestamped success marker for the cron log.

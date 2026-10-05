@@ -13,6 +13,7 @@ compile: venv/bin/python
 	$(PYTHON) -m py_compile *.py scripts/*.py
 
 test: venv/bin/python
+	$(PYTHON) scripts/test_mac_publish.py
 	$(PYTHON) scripts/test_daily_refresh_merge.py
 	$(PYTHON) scripts/test_news_summary_fallback.py
 	$(PYTHON) scripts/test_gemini_summary_request.py
@@ -27,7 +28,7 @@ db-dry-run: venv/bin/python
 	$(PYTHON) scripts/db_migrate.py --dry-run
 
 shell-check:
-	bash -n scripts/*.sh
+	@for script in scripts/*.sh; do bash -n "$$script" || exit; done
 
 pip-check: venv/bin/python
 	$(PIP) check

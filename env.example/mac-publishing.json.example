@@ -1,0 +1,4 @@
+{
+  "enabled": false,
+  "database_url": "host=/Volumes/SSD/Databases/qqq-pg17-20261005/socket port=55437 dbname=qqq_test user=qqq_test"
+}
