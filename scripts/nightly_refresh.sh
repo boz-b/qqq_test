@@ -10,7 +10,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 # Run every later command from the project root so relative paths are predictable under cron.
 
-echo "[$(date --iso-8601=seconds)] Starting nightly refresh in $REPO_DIR"
+echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] Starting nightly refresh in $REPO_DIR"
 # Print a timestamped start marker so the cron log is easy to scan.
 
 mkdir -p logs data
@@ -18,7 +18,7 @@ mkdir -p logs data
 
 if [ ! -x venv/bin/python ]; then
 # Check that the project-local Python environment exists and has an executable Python.
-    echo "[$(date --iso-8601=seconds)] ERROR: venv missing; run scripts/setup_local_runtime.sh first"
+    echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] ERROR: venv missing; run scripts/setup_local_runtime.sh first"
 # Explain the exact setup command needed instead of failing with a vague Python error.
     exit 1
 # Stop because running without the project-local venv would risk using global Python packages.
@@ -34,18 +34,15 @@ source venv/bin/activate
 python scripts/prepare_local_data_cache.py
 # Recreate/normalize local data caches before refreshing or exporting dashboard JSON.
 
-TARGET_DATE="${NEWS_TARGET_DATE:-$(python - <<'PY'
-from datetime import datetime
-from zoneinfo import ZoneInfo
-# Use the US market date, not the Raspberry Pi's local Istanbul date.
-
-print(datetime.now(ZoneInfo("America/New_York")).date().isoformat())
-# Cron runs after the US close, so this is the one market day that needs new news summarization.
-PY
-)}"
+if [ -n "${NEWS_TARGET_DATE:-}" ]; then
+    TARGET_DATE="$NEWS_TARGET_DATE"
+else
+# A one-line expression avoids Bash 3.2 heredoc parsing inside substitutions.
+    TARGET_DATE="$(python -c 'from datetime import datetime; from zoneinfo import ZoneInfo; print(datetime.now(ZoneInfo("America/New_York")).date().isoformat())')"
+fi
 # Allow manual repair runs to override NEWS_TARGET_DATE while cron uses the current New York market date.
 
-echo "[$(date --iso-8601=seconds)] Refreshing combined news + official macro feed for market day: ${TARGET_DATE}"
+echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] Refreshing combined news + official macro feed for market day: ${TARGET_DATE}"
 # Print the exact single date being refreshed; news summaries use one Gemini request and macro actuals use bounded Brave Search lookups.
 
 python news_feeds.py --start "${TARGET_DATE}" --end "${TARGET_DATE}" --summary-date "${TARGET_DATE}"
@@ -54,11 +51,11 @@ python news_feeds.py --start "${TARGET_DATE}" --end "${TARGET_DATE}" --summary-d
 EXPORT_JSON_FLAGS="${EXPORT_JSON_FLAGS:-}"
 # Allow tests to pass --no-git through the environment while cron uses the default commit/push behavior.
 
-echo "[$(date --iso-8601=seconds)] Exporting static dashboard data"
+echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] Exporting static dashboard data"
 # Print an export start marker before generating public/data JSON files.
 
 /usr/bin/env bash scripts/cron_export_static.sh
 # Generate static dashboard JSON from CSV by default, or from PostgreSQL only when QQQ_CRON_DATA_BACKEND=postgres.
 
-echo "[$(date --iso-8601=seconds)] Nightly refresh done"
+echo "[$(date '+%Y-%m-%dT%H:%M:%S%z')] Nightly refresh done"
 # Print a timestamped success marker for the cron log.
