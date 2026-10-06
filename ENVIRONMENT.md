@@ -20,6 +20,45 @@ This project keeps real API keys outside git.
 2. Put the real Finnhub key in `env/finnhub.env` only.
 3. Do not commit files under `env/`.
 
+## Codex subscription news summary setup
+
+The optional `codex` provider uses `codex exec` with **gpt-6-luna / medium**,
+through saved ChatGPT subscription sign-in. It needs no OpenAI API key or Python
+SDK. It consumes the account's Codex allowance; sign-in expiry, usage limits,
+service errors and unavailable models use the existing summary fallback.
+
+1. Install a CLI version supporting `exec --ignore-user-config --ephemeral
+   --output-schema`, and sign in with `codex login` as the publishing Mac user.
+   `codex login status` must report ChatGPT sign-in. Do not copy or inspect auth files.
+2. Copy `env.example/codex_summary.env.example` to ignored
+   `env/codex_summary.env`. Set `CODEX_SUMMARY_COMMAND` to the absolute executable
+   path returned by `command -v codex` in your terminal: launchd has a minimal PATH.
+3. After testing and review, set `LLM_SUMMARY_ENABLED=1` in that new file.
+   It loads before the existing Gemini settings, without editing the saved keys.
+   Existing candidate limits, date scope and FinancialJuice settings still apply.
+4. Test a bounded summary in the actual publishing user's launchd session before
+   switching production. This test must not run the full refresh/export pipeline.
+
+The CLI receives only the already selected news text via stdin. It runs from an
+isolated temporary directory, with read-only sandboxing, shell/search/apps/plugins/
+subagents/hooks disabled, no project instructions or memories, and an allowlisted
+process environment that excludes provider/API keys and database settings. It uses
+an ephemeral session and structured JSON output; the adapter validates that output
+before the existing date/row sanitizer. CLI output is not copied into publisher logs.
+`CODEX_SUMMARY_TIMEOUT_SECONDS` defaults to 180 (bounded to 15–300); timeout kills
+the process group. One attempt per requested date, no automatic retries or Gemini
+API failover. Failures and empty output preserve existing summaries, otherwise use
+the bounded related-news fallback. No change to Brave actuals or DB/export gates.
+
+Rollback: set `LLM_SUMMARY_PROVIDER=gemini` in the non-secret override file to reuse
+existing private Gemini settings, or set `LLM_SUMMARY_ENABLED=0` to disable AI
+summaries. Do not delete credentials or change the publishing schedule. Deploy code
+through a reviewed PR before enabling the new provider on a clean main publisher.
+
+References: [non-interactive execution](https://learn.chatgpt.com/docs/non-interactive-mode),
+[subscription authentication](https://learn.chatgpt.com/docs/auth),
+[models](https://learn.chatgpt.com/docs/models).
+
 ## Gemini AI news summary setup
 
 The daily news pipeline stores concise Gemini-generated bullet summaries instead of raw Finnhub/FinancialJuice headlines.
