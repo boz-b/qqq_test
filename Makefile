@@ -17,6 +17,7 @@ test: venv/bin/python
 	$(PYTHON) scripts/test_daily_refresh_merge.py
 	$(PYTHON) scripts/test_news_summary_fallback.py
 	$(PYTHON) scripts/test_gemini_summary_request.py
+	$(PYTHON) scripts/test_codex_summary.py
 	$(PYTHON) scripts/test_calendar_actual_enrichment.py
 	$(PYTHON) scripts/test_static_public_data.py
 	$(PYTHON) scripts/test_no_tracked_secrets.py

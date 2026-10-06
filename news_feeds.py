@@ -32,6 +32,7 @@ CALENDAR_ACTUALS_BACKOFF_JSON = DATA_DIR / "calendar_actuals_search_backoff.json
 CALENDAR_ACTUALS_STATE_JSON = DATA_DIR / "calendar_actuals_search_state.json"  # Persist request counts and positive/negative lookup cache entries.
 WEEKLY_CALENDAR_CSV = DATA_DIR / "ff_calendar_thisweek.csv"  # Store the downloaded weekly macro calendar CSV here.
 ENV_FILES = [  # List local-only env files that may contain API keys or local feature flags.
+    ENV_DIR / "codex_summary.env",  # Optional non-secret provider override, before legacy Gemini settings.
     ENV_DIR / "finnhub.env",  # Prefer this ignored file for the real Finnhub API key.
     ENV_DIR / "llm_summary.env",  # Prefer this ignored file for the real Gemini summary API key.
     ENV_DIR / "local.env",  # Allow an optional ignored shared local env file for future local-only settings.
@@ -340,16 +341,27 @@ def _eastern_today() -> date_cls:
 
 
 def _llm_summary_config() -> dict[str, Any] | None:
-    """Return Gemini summary settings when enabled, otherwise return None."""  # Raw news rows are no longer persisted as a fallback.
+    """Return the selected summary provider settings when enabled."""  # Raw news rows are no longer persisted as a fallback.
     _load_env()  # Load ignored env files before reading optional Gemini settings.
     if not _env_flag("LLM_SUMMARY_ENABLED", False):  # Summaries must be explicitly enabled by Boz.
         return None  # Disabled mode skips news persistence instead of storing raw headlines.
 
     provider = _clean_text(os.getenv("LLM_SUMMARY_PROVIDER", "gemini")).lower()  # Read the summary provider name.
+    if provider == "codex":
+        return {
+            "provider": "codex",
+            "command": _clean_text(os.getenv("CODEX_SUMMARY_COMMAND")) or "codex",
+            "model": "gpt-6-luna",
+            "reasoning_effort": "medium",
+            "timeout": _env_int("CODEX_SUMMARY_TIMEOUT_SECONDS", 180, 15, 300),
+            "max_candidate_items": _env_int("LLM_SUMMARY_MAX_CANDIDATE_ITEMS", DEFAULT_LLM_SUMMARY_MAX_CANDIDATE_ITEMS, 5, 100),
+            "max_bullets": _env_int("LLM_SUMMARY_MAX_BULLETS", DEFAULT_LLM_SUMMARY_MAX_BULLETS, 1, 12),
+            "summary_start_date": _env_date("LLM_SUMMARY_START_DATE", DEFAULT_LLM_SUMMARY_START_DATE),
+        }
     legacy_base = _clean_text(os.getenv("LLM_SUMMARY_API_BASE", ""))  # Read the old template base URL for backward compatibility.
     if provider == "openai-compatible" and _is_placeholder(legacy_base):  # Old local templates used this provider plus a fake base URL.
         provider = "gemini"  # Treat that old placeholder combination as Gemini when the user enables summaries now.
-    if provider not in {"gemini", "google", "google-gemini"}:  # This implementation intentionally supports Gemini only.
+    if provider not in {"gemini", "google", "google-gemini"}:  # Codex was handled above.
         return None  # Unknown providers fall back to the existing deterministic headline path.
 
     api_key = (  # Accept the clear Gemini name first, plus two common backwards-compatible aliases.
@@ -369,6 +381,7 @@ def _llm_summary_config() -> dict[str, Any] | None:
         api_base = GEMINI_API_BASE_DEFAULT  # Use Google's Developer API by default.
 
     return {  # Return a plain dict so this file stays dependency-free.
+        "provider": "gemini",
         "api_key": api_key,  # Store the key only in memory for the request header.
         "api_base": api_base.rstrip("/"),  # Normalize the URL so endpoint joining is predictable.
         "model": model,  # Store the selected Gemini model name.
@@ -1726,6 +1739,20 @@ def enrich_calendar_actuals_with_brave(
     return out.drop(columns=["_calendar_date"], errors="ignore")
 
 
+def summarize_news_candidates(scored_items, trade_date, config):
+    """Dispatch one bounded daily batch to the explicitly selected provider."""
+    if config.get("provider", "gemini") != "codex":
+        return summarize_news_candidates_with_gemini(scored_items, trade_date, config)
+    from codex_summary import call_codex_summary
+
+    limited_items = scored_items[:config["max_candidate_items"]]
+    if not limited_items:
+        return []
+    prompt = _build_gemini_summary_prompt(limited_items, trade_date, config["max_bullets"])
+    raw_rows = _parse_json_array_from_text(call_codex_summary(config, prompt))
+    return _sanitize_summary_rows(raw_rows, trade_date, config["max_bullets"])
+
+
 def _existing_news_summary_records_for_day(trade_date: date_cls) -> list[dict[str, Any]]:
     """Return already-archived Gemini summary rows for a date, so transient API failures do not degrade them."""
     records: list[dict[str, Any]] = []
@@ -1858,14 +1885,18 @@ def fetch_finnhub_news(start_date: str, end_date: str, max_items_per_day: int = 
             try:  # Model/API failures should not break the nightly refresh.
                 llm_request_count += 1  # Track the actual number of Gemini requests made.
                 limited_count = min(len(scored), llm_config["max_candidate_items"])  # Log the single batched prompt size without secrets.
-                print(f"[news_feeds] Gemini summary request {llm_request_count} for {day}: {limited_count} candidates")
-                summary_records = summarize_news_candidates_with_gemini(scored, day, llm_config)  # Replace raw headlines with concise bullets.
+                provider_label = "Codex gpt-6-luna (medium)" if llm_config.get("provider") == "codex" else "Gemini"
+                print(f"[news_feeds] {provider_label} summary request {llm_request_count} for {day}: {limited_count} candidates")
+                summary_records = summarize_news_candidates(scored, day, llm_config)
+                if not summary_records:
+                    raise ValueError("Summary provider returned no usable rows")
+                print(f"[news_feeds] {provider_label} produced {len(summary_records)} summary row(s) for {day}")
             except Exception as exc:  # Preserve prior summaries if Gemini errors, times out, or returns malformed JSON.
                 if existing_summary_records:  # If a previous good summary exists, keep it rather than degrading to raw rows.
                     summary_records = existing_summary_records
-                    print(f"[news_feeds] Gemini summary failed for {day}: {exc}; keeping existing summary rows")
+                    print(f"[news_feeds] {provider_label} summary failed for {day}: {exc}; keeping existing summary rows")
                 else:  # First run for that date should still leave top related news on the website.
-                    print(f"[news_feeds] Gemini summary failed for {day}: {exc}; using top related news fallback")  # Log no secrets, only the date/error.
+                    print(f"[news_feeds] {provider_label} summary failed for {day}: {exc}; using top related news fallback")  # Log no secrets, only the date/error.
         elif existing_summary_records and summary_start_allowed:  # Do not discard already-good summaries when refreshing a wider range.
             summary_records = existing_summary_records
 
@@ -2258,8 +2289,8 @@ def _parse_cli_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Refresh qqq_test news/macro events.")
     parser.add_argument("--start", default=default_date, help="Inclusive market date to refresh, YYYY-MM-DD. Default: current New York date.")
     parser.add_argument("--end", default=None, help="Inclusive market date to refresh, YYYY-MM-DD. Default: --start.")
-    parser.add_argument("--summary-date", default=None, help="The single market date allowed to call Gemini. Default: --end.")
-    parser.add_argument("--summarize-all-dates", action="store_true", help="Explicit backfill mode: allow one Gemini request per refreshed date.")
+    parser.add_argument("--summary-date", default=None, help="The single market date allowed to call the summary provider. Default: --end.")
+    parser.add_argument("--summarize-all-dates", action="store_true", help="Explicit backfill mode: allow one AI summary request per refreshed date.")
     parser.add_argument("--csv", default=str(COMBINED_EVENTS_CSV), help="Output event CSV path. Default: data/ff_events.csv.")
     args = parser.parse_args()
     args.start_date = _parse_iso_date(args.start, "--start")
@@ -2285,4 +2316,4 @@ if __name__ == "__main__":
         llm_summary_dates=cli_args.llm_summary_dates,
     )
     summary_scope = "all refreshed dates" if cli_args.llm_summary_dates is None else ", ".join(sorted(d.isoformat() for d in cli_args.llm_summary_dates))
-    print(f"saved {len(df)} rows -> {cli_args.csv} (Gemini allowed only for: {summary_scope})")
+    print(f"saved {len(df)} rows -> {cli_args.csv} (AI summary allowed only for: {summary_scope})")

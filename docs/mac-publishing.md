@@ -82,3 +82,12 @@ attempt evidence, and assess divergent Git/CSV/DB state before a selected retry
 or Pi rollback. A failed push may leave a local data commit; do not reset it.
 The static site keeps its last published data. No deletion, migration repeat,
 old gateway restoration or automatic Pi rollback follows from this setup.
+
+## Subscription-based summaries
+
+The `codex` news provider is configured separately in ignored
+`env/codex_summary.env`; see ENVIRONMENT.md. Pin the absolute CLI executable path
+for launchd, verify ChatGPT subscription authentication in that user session, and
+keep the existing keys for rollback. The publisher uses the same 01:00 schedule,
+lock, receipt and DB parity gates. Merge the provider implementation before enabling
+the override in the clean publisher; never run a feature branch as the publisher.
